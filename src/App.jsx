@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Plus, Minus, Trash2, ArrowUp, ArrowDown, ChevronLeft, RefreshCw, Save, Users, ClipboardList, ListOrdered, Table2, X, RotateCcw, Pencil } from "lucide-react";
+import { Plus, Minus, Trash2, ArrowUp, ArrowDown, ChevronLeft, RefreshCw, Save, Users, ClipboardList, ListOrdered, Table2, X, RotateCcw, Pencil, Printer } from "lucide-react";
 
 /* ---------------------------------------------------------------------------
    HELPERS
@@ -766,7 +766,7 @@ function PlayerView({ player, games, stats, historical, onBack, updateLine, upda
    GAMES LIST + GAME DETAIL
 --------------------------------------------------------------------------- */
 
-function GamesListView({ games, trashedGames, onOpen, addGame, deleteGame, restoreGame, permanentlyDeleteGame }) {
+function GamesListView({ games, trashedGames, lineups, onOpen, addGame, deleteGame, restoreGame, permanentlyDeleteGame }) {
   const [showNew, setShowNew] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -801,7 +801,14 @@ function GamesListView({ games, trashedGames, onOpen, addGame, deleteGame, resto
           <div key={g.id} onClick={() => onOpen(g.id)} className="flex items-center justify-between p-3 rounded-lg cursor-pointer hover:bg-violet-50/50" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
             <div>
               <div className="font-bold" style={{ color: COLORS.field }}>{g.date} {g.opponent && <span className="text-stone-500 font-normal">vs {g.opponent}</span>}</div>
-              <div className="text-xs text-stone-400">{(g.roster || []).length} player{(g.roster || []).length === 1 ? "" : "s"} logged</div>
+              <div className="text-xs text-stone-400 flex items-center gap-2">
+                <span>{(g.roster || []).length} player{(g.roster || []).length === 1 ? "" : "s"} logged</span>
+                {lineups[g.id] && (
+                  <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style={{ background: COLORS.field, color: "white" }}>
+                    Lineup set
+                  </span>
+                )}
+              </div>
             </div>
             <button onClick={(e) => { e.stopPropagation(); deleteGame(g.id); }} className="text-stone-400 hover:text-red-700" title="Move to recycle bin">
               <Trash2 size={16} />
@@ -839,12 +846,13 @@ function GamesListView({ games, trashedGames, onOpen, addGame, deleteGame, resto
   );
 }
 
-function GameDetailView({ game, players, stats, onBack, setRoster, updateLine }) {
+function GameDetailView({ game, players, stats, lineups, onBack, setRoster, updateLine }) {
   const [pickerOpen, setPickerOpen] = useState((game.roster || []).length === 0);
   const [checked, setChecked] = useState(new Set(game.roster || []));
 
   const rosterIds = game.roster || [];
   const rosterPlayers = players.filter((p) => rosterIds.includes(p.id));
+  const lineupOrder = lineups[game.id] || null;
 
   const togglePick = (id) => {
     setChecked((prev) => {
@@ -877,18 +885,22 @@ function GameDetailView({ game, players, stats, onBack, setRoster, updateLine })
         </div>
       ) : (
         <>
-          <div className="flex justify-between items-center mt-2 mb-2">
-            <p className="text-sm" style={{ color: "#6B6280" }}>Enter stats below. They save automatically as you click out of each box.</p>
+          <div className="flex justify-between items-center mt-2 mb-2 flex-wrap gap-2">
+            <p className="text-sm" style={{ color: "#6B6280" }}>
+              {lineupOrder
+                ? "Players below are ordered by the saved batting lineup. Enter stats below, they save automatically as you click out of each box."
+                : "Enter stats below. They save automatically as you click out of each box."}
+            </p>
             <Btn variant="ghost" small onClick={() => { setChecked(new Set(rosterIds)); setPickerOpen(true); }}>Edit roster</Btn>
           </div>
-          <GameStatsTable game={game} players={rosterPlayers} stats={stats} updateLine={updateLine} />
+          <GameStatsTable game={game} players={rosterPlayers} stats={stats} updateLine={updateLine} lineupOrder={lineupOrder} />
         </>
       )}
     </div>
   );
 }
 
-function GameStatsTable({ game, players, stats, updateLine }) {
+function GameStatsTable({ game, players, stats, updateLine, lineupOrder }) {
   const bump = (playerId, field, delta, alsoAB) => {
     const current = lineFor(stats, game.id, playerId);
     const patch = { [field]: Math.max(0, (Number(current[field]) || 0) + delta) };
@@ -896,15 +908,27 @@ function GameStatsTable({ game, players, stats, updateLine }) {
     updateLine(game.id, playerId, { ...current, ...patch });
   };
 
+  const orderedPlayers = lineupOrder
+    ? [...players].sort((a, b) => {
+        const ia = lineupOrder.indexOf(a.id);
+        const ib = lineupOrder.indexOf(b.id);
+        return (ia === -1 ? Infinity : ia) - (ib === -1 ? Infinity : ib);
+      })
+    : players;
+
   return (
     <div className="grid gap-3">
-      {players.map((p) => {
+      {orderedPlayers.map((p) => {
         const line = lineFor(stats, game.id, p.id);
         const d = derive(line);
+        const battingNumber = lineupOrder ? lineupOrder.indexOf(p.id) : -1;
         return (
           <div key={p.id} className="rounded-lg p-3" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
               <div className="flex items-center gap-2">
+                {battingNumber !== -1 && (
+                  <span className="font-mono font-extrabold w-5 text-center text-sm" style={{ color: COLORS.clay }}>{battingNumber + 1}</span>
+                )}
                 <span className="font-bold" style={{ color: COLORS.ink }}>{p.name}</span>
                 <GenderPill gender={p.gender} />
               </div>
@@ -952,7 +976,7 @@ function GameStatsTable({ game, players, stats, updateLine }) {
    LINEUP BUILDER
 --------------------------------------------------------------------------- */
 
-function LineupView({ players, games, stats, historical, lineups, saveLineup }) {
+function LineupView({ players, games, stats, historical, lineups, saveLineup, teamName }) {
   const [gameId, setGameId] = useState("");
   const [checked, setChecked] = useState(new Set());
   const [order, setOrder] = useState(null);
@@ -1030,6 +1054,7 @@ function LineupView({ players, games, stats, historical, lineups, saveLineup }) 
       <div className="flex gap-2 mb-4">
         <Btn icon={RefreshCw} onClick={generate} disabled={checked.size === 0}>Generate Lineup</Btn>
         {order && gameId && <Btn variant="accent" icon={Save} onClick={() => saveLineup(gameId, order)}>Save to Game</Btn>}
+        {order && <Btn variant="ghost" icon={Printer} onClick={() => window.print()}>Print Lineup</Btn>}
       </div>
 
       {order && (
@@ -1071,6 +1096,61 @@ function LineupView({ players, games, stats, historical, lineups, saveLineup }) 
             })}
           </ol>
         </div>
+      )}
+
+      {order && (
+        <>
+          <style>{`
+            .print-lineup-sheet { display: none; }
+            @media print {
+              body * { visibility: hidden; }
+              .print-lineup-sheet, .print-lineup-sheet * { visibility: visible; }
+              .print-lineup-sheet {
+                display: block !important;
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                padding: 24px;
+              }
+            }
+          `}</style>
+          <div className="print-lineup-sheet">
+            <h1 style={{ fontSize: "20px", fontWeight: 800, marginBottom: "2px" }}>{teamName || "Batting Lineup"}</h1>
+            <p style={{ fontSize: "13px", color: "#444", marginBottom: "16px" }}>
+              {(() => {
+                const g = games.find((x) => x.id === gameId);
+                return g ? `${g.date}${g.opponent ? ` vs ${g.opponent}` : ""}` : "Batting Lineup";
+              })()}
+            </p>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
+              <thead>
+                <tr>
+                  {["Batting number", "Name", "Gender"].map((h) => (
+                    <th
+                      key={h}
+                      style={{ textAlign: "left", borderBottom: "2px solid #222", padding: "6px 8px", fontWeight: 800 }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {order.map((id, idx) => {
+                  const p = playersById[id];
+                  return (
+                    <tr key={id}>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>{idx + 1}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>{p?.name || "—"}</td>
+                      <td style={{ padding: "6px 8px", borderBottom: "1px solid #ccc" }}>{p?.gender === "F" ? "Female" : "Male"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
@@ -1366,6 +1446,7 @@ function TeamWorkspace({
           <GamesListView
             games={games}
             trashedGames={trashedGames}
+            lineups={lineups}
             onOpen={setOpenGameId}
             addGame={addGame}
             deleteGame={deleteGame}
@@ -1374,11 +1455,11 @@ function TeamWorkspace({
           />
         )}
         {tab === "games" && openGame && (
-          <GameDetailView game={openGame} players={players} stats={stats} onBack={() => setOpenGameId(null)} setRoster={setRoster} updateLine={updateLine} />
+          <GameDetailView game={openGame} players={players} stats={stats} lineups={lineups} onBack={() => setOpenGameId(null)} setRoster={setRoster} updateLine={updateLine} />
         )}
 
         {tab === "lineup" && (
-          <LineupView players={players} games={games} stats={stats} historical={historical} lineups={lineups} saveLineup={saveLineup} />
+          <LineupView players={players} games={games} stats={stats} historical={historical} lineups={lineups} saveLineup={saveLineup} teamName={teamName} />
         )}
 
         {tab === "history" && (

@@ -4,18 +4,19 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
+  const msg = `Supabase config missing at build time.\nURL seen: ${supabaseUrl || "(nothing)"}\nKey present: ${!!supabaseKey}`;
   // eslint-disable-next-line no-console
-  console.error(
-    "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Copy .env.example to .env and fill them in, then restart the dev server."
-  );
+  console.error(msg);
+  alert(msg);
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(supabaseUrl || "https://missing-url.supabase.co", supabaseKey || "missing-key");
 
 function reportError(action, error) {
+  const msg = `Storage ${action} failed:\n${error?.message || error}\n\nConfigured URL: ${supabaseUrl || "(nothing)"}\nKey present: ${!!supabaseKey}`;
   // eslint-disable-next-line no-console
-  console.error(`Storage ${action} failed:`, error);
-  alert(`Storage ${action} failed:\n${error?.message || error}`);
+  console.error(msg, error);
+  alert(msg);
 }
 
 /* This mirrors the window.storage.get/set/delete/list contract the app
