@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Plus, Minus, Trash2, ArrowUp, ArrowDown, ChevronLeft, RefreshCw, Save, Users, ClipboardList, ListOrdered, Table2, X, RotateCcw, Pencil, Printer } from "lucide-react";
+import { Plus, Minus, Trash2, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, RefreshCw, Save, Users, ClipboardList, ListOrdered, Table2, X, RotateCcw, Pencil, Printer } from "lucide-react";
 
 /* ---------------------------------------------------------------------------
    HELPERS
 --------------------------------------------------------------------------- */
 
-const KEYS = { TEAMS: "teams", PLAYERS: "players", GAMES: "games", STATS: "stats", LINEUPS: "lineups", HISTORICAL: "historical", TRASH: "trashedGames" };
+const KEYS = { TEAMS: "teams", PLAYERS: "players", GAMES: "games", STATS: "stats", LINEUPS: "lineups", HISTORICAL: "historical", TRASH: "trashedGames", GAMELOGS: "gameLogs" };
 
 function uid(prefix) {
   return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -78,6 +78,14 @@ function derive(line) {
   const obp = ab > 0 ? h / ab : 0;
   const slg = ab > 0 ? tb / ab : 0;
   return { ab, h, tb, rbi, obp, slg };
+}
+
+function withAlpha(hex, alpha) {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function fmt3(n) {
@@ -234,9 +242,14 @@ function buildLineup(selectedIds, playersById, statsCumulativeById) {
   data.forEach((d) => { qualityById[d.id] = (d.obpN + d.slgN + d.rbiN) / 3; });
 
   const tableSetterW = (i) => Math.max(0, 1 - i / (n - 1 || 1));
-  const peak = Math.min(3, n - 1);
-  const spread = Math.max(2, n / 2);
-  const powerW = (i) => Math.max(0, 1 - Math.abs(i - peak) / spread);
+  const peak = Math.min(2, n - 1);
+  const forwardSpread = Math.max(2.5, n * 0.55); // gentle falloff toward the front of the order
+  const backwardSpread = Math.max(1.5, n * 0.3); // steeper falloff toward the back of the order
+  const powerW = (i) => {
+    const dist = i - peak;
+    const spread = dist < 0 ? forwardSpread : backwardSpread;
+    return Math.max(0, 1 - Math.abs(dist) / spread);
+  };
 
   const slots = Array.from({ length: n }, (_, i) => i);
   const importance = slots.map((i) => tableSetterW(i) + powerW(i));
@@ -797,24 +810,32 @@ function GamesListView({ games, trashedGames, lineups, onOpen, addGame, deleteGa
       )}
 
       <div className="grid gap-2">
-        {sorted.map((g) => (
-          <div key={g.id} onClick={() => onOpen(g.id)} className="flex items-center justify-between p-3 rounded-lg cursor-pointer hover:bg-violet-50/50" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
-            <div>
-              <div className="font-bold" style={{ color: COLORS.field }}>{g.date} {g.opponent && <span className="text-stone-500 font-normal">vs {g.opponent}</span>}</div>
-              <div className="text-xs text-stone-400 flex items-center gap-2">
-                <span>{(g.roster || []).length} player{(g.roster || []).length === 1 ? "" : "s"} logged</span>
-                {lineups[g.id] && (
-                  <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style={{ background: COLORS.field, color: "white" }}>
-                    Lineup set
-                  </span>
-                )}
+        {sorted.map((g) => {
+          const hasScore = (g.ourScore || 0) > 0 || (g.oppScore || 0) > 0;
+          return (
+            <div key={g.id} onClick={() => onOpen(g.id)} className="flex items-center justify-between p-3 rounded-lg cursor-pointer hover:bg-violet-50/50" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+              <div>
+                <div className="font-bold" style={{ color: COLORS.field }}>{g.date} {g.opponent && <span className="text-stone-500 font-normal">vs {g.opponent}</span>}</div>
+                <div className="text-xs text-stone-400 flex items-center gap-2 flex-wrap">
+                  <span>{(g.roster || []).length} player{(g.roster || []).length === 1 ? "" : "s"} logged</span>
+                  {lineups[g.id] && (
+                    <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style={{ background: COLORS.field, color: "white" }}>
+                      Lineup set
+                    </span>
+                  )}
+                  {hasScore && (
+                    <span className="font-mono font-extrabold text-sm" style={{ color: COLORS.clay }}>
+                      {g.ourScore || 0}–{g.oppScore || 0}
+                    </span>
+                  )}
+                </div>
               </div>
+              <button onClick={(e) => { e.stopPropagation(); deleteGame(g.id); }} className="text-stone-400 hover:text-red-700" title="Move to recycle bin">
+                <Trash2 size={16} />
+              </button>
             </div>
-            <button onClick={(e) => { e.stopPropagation(); deleteGame(g.id); }} className="text-stone-400 hover:text-red-700" title="Move to recycle bin">
-              <Trash2 size={16} />
-            </button>
-          </div>
-        ))}
+          );
+        })}
         {sorted.length === 0 && <div className="text-center text-stone-400 py-8">No games yet. Create one to start logging stats.</div>}
       </div>
 
@@ -846,13 +867,24 @@ function GamesListView({ games, trashedGames, lineups, onOpen, addGame, deleteGa
   );
 }
 
-function GameDetailView({ game, players, stats, lineups, onBack, setRoster, updateLine }) {
+function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, logPlay, adjustPlayRbi, deletePlay, teamName }) {
   const [pickerOpen, setPickerOpen] = useState((game.roster || []).length === 0);
   const [checked, setChecked] = useState(new Set(game.roster || []));
+  const [showLog, setShowLog] = useState(true);
+  const [pendingResult, setPendingResult] = useState(null);
+  const [pendingRbi, setPendingRbi] = useState(0);
+  const [noRbiSelected, setNoRbiSelected] = useState(false);
 
   const rosterIds = game.roster || [];
   const rosterPlayers = players.filter((p) => rosterIds.includes(p.id));
   const lineupOrder = lineups[game.id] || null;
+  const playersById = useMemo(() => Object.fromEntries(players.map((p) => [p.id, p])), [players]);
+
+  const battingOrder = lineupOrder && lineupOrder.length ? lineupOrder : rosterIds;
+  const liveInning = game.liveInning || 1;
+  const liveBatterIdx = battingOrder.length ? (game.liveBatterIdx || 0) % battingOrder.length : 0;
+  const currentBatterId = battingOrder[liveBatterIdx];
+  const currentBatter = currentBatterId ? playersById[currentBatterId] : null;
 
   const togglePick = (id) => {
     setChecked((prev) => {
@@ -862,12 +894,89 @@ function GameDetailView({ game, players, stats, lineups, onBack, setRoster, upda
     });
   };
 
+  const resetPending = () => { setPendingResult(null); setPendingRbi(0); setNoRbiSelected(false); };
+
+  const moveBatter = (dir) => {
+    if (!battingOrder.length) return;
+    const next = (liveBatterIdx + dir + battingOrder.length) % battingOrder.length;
+    updateGameLive(game.id, { liveBatterIdx: next });
+    resetPending();
+  };
+
+  const endInning = () => {
+    updateGameLive(game.id, { liveInning: liveInning + 1 });
+    resetPending();
+  };
+
+  const canAdvance = pendingResult !== null && (pendingRbi > 0 || noRbiSelected);
+  const confirmAtBat = () => {
+    if (!currentBatterId || !canAdvance) return;
+    logPlay(game, currentBatterId, pendingResult, pendingRbi);
+    resetPending();
+  };
+
+  const logsByInning = {};
+  (gameLog || []).forEach((entry) => {
+    (logsByInning[entry.inning] = logsByInning[entry.inning] || []).push(entry);
+  });
+  const inningsInOrder = Object.keys(logsByInning).map(Number).sort((a, b) => a - b);
+
+  const resultLabel = { OUT: "Out", "1B": "Single", "2B": "Double", "3B": "Triple", HR: "Home Run" };
+  const resultColor = { OUT: COLORS.ink, "1B": COLORS.turf, "2B": COLORS.turf, "3B": COLORS.turf, HR: COLORS.clay };
+
   return (
     <div>
       <button onClick={onBack} className="flex items-center gap-1 text-sm font-bold mb-3" style={{ color: COLORS.field }}>
         <ChevronLeft size={16} /> Back to games
       </button>
       <h2 className="text-xl font-extrabold mb-1" style={{ color: COLORS.field }}>{game.date} {game.opponent && <span className="text-stone-500 font-normal">vs {game.opponent}</span>}</h2>
+
+      <div className="flex items-center justify-center gap-6 rounded-lg p-3 mb-4" style={{ background: COLORS.field }}>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) })}
+            className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+          >
+            <Minus size={14} />
+          </button>
+          <div className="text-center px-1">
+            <div className="text-[10px] font-bold uppercase tracking-wide" style={{ color: "rgba(245,243,252,0.7)" }}>{teamName || "Us"}</div>
+            <div className="font-mono font-extrabold text-white" style={{ fontSize: "2rem", lineHeight: 1 }}>{game.ourScore || 0}</div>
+          </div>
+          <button
+            onClick={() => updateGameLive(game.id, { ourScore: (game.ourScore || 0) + 1 })}
+            className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+        <div className="font-extrabold" style={{ color: "rgba(245,243,252,0.4)", fontSize: "1.5rem" }}>–</div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => updateGameLive(game.id, { oppScore: Math.max(0, (game.oppScore || 0) - 1) })}
+            className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+          >
+            <Minus size={14} />
+          </button>
+          <div className="text-center px-1">
+            <div className="text-[10px] font-bold uppercase tracking-wide" style={{ color: "rgba(245,243,252,0.7)" }}>{game.opponent || "Opponent"}</div>
+            <div className="font-mono font-extrabold text-white" style={{ fontSize: "2rem", lineHeight: 1 }}>{game.oppScore || 0}</div>
+          </div>
+          <button
+            onClick={() => updateGameLive(game.id, { oppScore: (game.oppScore || 0) + 1 })}
+            className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+      </div>
+      <p className="text-[11px] mb-3 text-center" style={{ color: COLORS.muted }}>
+        Your score updates automatically as RBIs are logged below. Use the +/- to correct it, or for runs that score without an RBI (errors, etc). The opponent's score is always manual.
+      </p>
 
       {pickerOpen ? (
         <div className="mt-4">
@@ -885,6 +994,124 @@ function GameDetailView({ game, players, stats, lineups, onBack, setRoster, upda
         </div>
       ) : (
         <>
+          {/* LIVE AT-BAT TRACKER */}
+          <div className="rounded-lg p-4 mb-5" style={{ background: "#EFF1FE", border: `2px solid ${COLORS.mustard}` }}>
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h3 className="font-extrabold uppercase tracking-wide text-sm" style={{ color: COLORS.field }}>Live At-Bat Tracker</h3>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wide mr-1" style={{ color: COLORS.field }}>Inning</span>
+                <button
+                  onClick={() => updateGameLive(game.id, { liveInning: Math.max(1, liveInning - 1) })}
+                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                  style={{ background: COLORS.field, color: "white" }}
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <div className="flex items-end gap-2 px-1" style={{ minWidth: "92px", justifyContent: "center" }}>
+                  <span className="font-mono font-bold" style={{ fontSize: "1.1rem", opacity: 0.3, color: COLORS.ink }}>
+                    {liveInning > 1 ? liveInning - 1 : ""}
+                  </span>
+                  <span className="font-mono font-extrabold" style={{ fontSize: "2.5rem", lineHeight: 1, color: COLORS.field }}>
+                    {liveInning}
+                  </span>
+                  <span className="font-mono font-bold" style={{ fontSize: "1.1rem", opacity: 0.3, color: COLORS.ink }}>
+                    {liveInning + 1}
+                  </span>
+                </div>
+                <button
+                  onClick={() => updateGameLive(game.id, { liveInning: liveInning + 1 })}
+                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                  style={{ background: COLORS.field, color: "white" }}
+                >
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+            </div>
+
+            {battingOrder.length === 0 ? (
+              <p className="text-sm" style={{ color: COLORS.muted }}>Confirm a roster (or save a lineup for this game) to start tracking at-bats.</p>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 mb-3 p-2 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                  <button onClick={() => moveBatter(-1)} className="text-stone-400 hover:text-stone-700"><ChevronLeft size={18} /></button>
+                  <span className="font-mono font-extrabold w-6 text-center" style={{ color: COLORS.clay }}>{liveBatterIdx + 1}</span>
+                  <span className="flex-1 font-bold" style={{ color: COLORS.ink }}>{currentBatter?.name || "—"}</span>
+                  {currentBatter && <GenderPill gender={currentBatter.gender} />}
+                  <button onClick={() => moveBatter(1)} className="text-stone-400 hover:text-stone-700"><ChevronRight size={18} /></button>
+                </div>
+
+                <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>1. Tap how this at-bat ended. Tap a different result to correct it, it won't double count.</p>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {["OUT", "1B", "2B", "3B", "HR"].map((r) => {
+                    const solid = resultColor[r];
+                    const selected = pendingResult === r;
+                    return (
+                      <button
+                        key={r}
+                        onClick={() => setPendingResult(r)}
+                        className="px-3 py-2 rounded-md text-sm font-bold transition-colors"
+                        style={{
+                          background: selected ? solid : withAlpha(solid, 0.12),
+                          color: selected ? "white" : solid,
+                          border: `1.5px solid ${selected ? solid : withAlpha(solid, 0.35)}`,
+                        }}
+                      >
+                        {resultLabel[r]}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>2. Add any RBIs from this at-bat, or confirm there weren't any.</p>
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  <button
+                    onClick={() => setPendingRbi((v) => Math.max(0, v - 1))}
+                    className="w-7 h-7 rounded-md flex items-center justify-center"
+                    style={{ background: "white", border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
+                  >
+                    <Minus size={14} />
+                  </button>
+                  <span className="w-6 text-center font-mono font-extrabold tabular-nums" style={{ color: COLORS.ink }}>{pendingRbi}</span>
+                  <button
+                    onClick={() => { setPendingRbi((v) => v + 1); setNoRbiSelected(false); }}
+                    className="w-7 h-7 rounded-md flex items-center justify-center"
+                    style={{ background: COLORS.mustard, color: "white" }}
+                  >
+                    <Plus size={14} />
+                  </button>
+                  <span className="text-xs font-bold uppercase tracking-wide mx-1" style={{ color: COLORS.muted }}>RBI</span>
+                  <button
+                    onClick={() => { setNoRbiSelected(true); setPendingRbi(0); }}
+                    className="px-3 py-1.5 rounded-md text-sm font-bold"
+                    style={{
+                      background: noRbiSelected ? COLORS.field : withAlpha(COLORS.field, 0.1),
+                      color: noRbiSelected ? "white" : COLORS.field,
+                      border: `1.5px solid ${noRbiSelected ? COLORS.field : withAlpha(COLORS.field, 0.3)}`,
+                    }}
+                  >
+                    No RBIs
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={confirmAtBat}
+                    disabled={!canAdvance}
+                    className="px-4 py-2.5 rounded-md text-sm font-extrabold flex items-center gap-1.5"
+                    style={{
+                      background: canAdvance ? COLORS.field : "#DAD3F0",
+                      color: canAdvance ? "white" : "#A79FC9",
+                      cursor: canAdvance ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    Next Batter <ChevronRight size={16} />
+                  </button>
+                  <Btn variant="ghost" icon={ChevronRight} onClick={endInning}>End Inning</Btn>
+                </div>
+              </>
+            )}
+          </div>
+
           <div className="flex justify-between items-center mt-2 mb-2 flex-wrap gap-2">
             <p className="text-sm" style={{ color: "#6B6280" }}>
               {lineupOrder
@@ -894,6 +1121,106 @@ function GameDetailView({ game, players, stats, lineups, onBack, setRoster, upda
             <Btn variant="ghost" small onClick={() => { setChecked(new Set(rosterIds)); setPickerOpen(true); }}>Edit roster</Btn>
           </div>
           <GameStatsTable game={game} players={rosterPlayers} stats={stats} updateLine={updateLine} lineupOrder={lineupOrder} />
+
+          {/* PLAY-BY-PLAY LOG, GROUPED BY INNING */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-2">
+              <button onClick={() => setShowLog((v) => !v)} className="flex items-center gap-1.5 text-sm font-bold uppercase tracking-wide" style={{ color: COLORS.field }}>
+                <ClipboardList size={15} /> Game Log {gameLog && gameLog.length > 0 ? `(${gameLog.length})` : ""}
+              </button>
+              {gameLog && gameLog.length > 0 && (
+                <Btn variant="ghost" small icon={Printer} onClick={() => window.print()}>Print Game Report</Btn>
+              )}
+            </div>
+
+            {showLog && (
+              <>
+                {(!gameLog || gameLog.length === 0) && (
+                  <p className="text-sm text-stone-400">No at-bats logged yet. Use the tracker above to start logging plays.</p>
+                )}
+                <div className="grid gap-3">
+                  {inningsInOrder.map((inning) => (
+                    <div key={inning}>
+                      <div className="text-xs font-bold uppercase tracking-wide mb-1" style={{ color: COLORS.clay }}>Inning {inning}</div>
+                      <div className="grid gap-1.5">
+                        {logsByInning[inning].map((entry) => {
+                          const p = playersById[entry.playerId];
+                          return (
+                            <div key={entry.id} className="flex items-center gap-2 px-3 py-1.5 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                              <span className="flex-1 text-sm font-semibold" style={{ color: COLORS.ink }}>{p?.name || "—"}</span>
+                              <span
+                                className="text-xs font-bold px-2 py-0.5 rounded-full"
+                                style={{ background: entry.result === "OUT" ? "#EAE4F7" : entry.result === "HR" ? COLORS.clay : COLORS.turf, color: entry.result === "OUT" ? COLORS.ink : "white" }}
+                              >
+                                {resultLabel[entry.result]}
+                              </span>
+                              <span className="flex items-center gap-1 text-xs" style={{ color: COLORS.muted }}>
+                                RBI
+                                <button onClick={() => adjustPlayRbi(game, entry.id, -1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Minus size={11} /></button>
+                                <span className="w-4 text-center font-mono">{entry.rbi || 0}</span>
+                                <button onClick={() => adjustPlayRbi(game, entry.id, 1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Plus size={11} /></button>
+                              </span>
+                              <ConfirmDelete label="Remove" onConfirm={() => deletePlay(game, entry.id)} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {gameLog && gameLog.length > 0 && (
+            <>
+              <style>{`
+                .print-game-report { display: none; }
+                @media print {
+                  body * { visibility: hidden; }
+                  .print-game-report, .print-game-report * { visibility: visible; }
+                  .print-game-report {
+                    display: block !important;
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    padding: 24px;
+                  }
+                }
+              `}</style>
+              <div className="print-game-report">
+                <h1 style={{ fontSize: "20px", fontWeight: 800, marginBottom: "2px" }}>{teamName || "Game Report"}</h1>
+                <p style={{ fontSize: "13px", color: "#444", marginBottom: "4px" }}>
+                  {game.date}{game.opponent ? ` vs ${game.opponent}` : ""}
+                </p>
+                <p style={{ fontSize: "15px", fontWeight: 800, marginBottom: "16px" }}>
+                  Final Score: {teamName || "Us"} {game.ourScore || 0} – {game.opponent || "Opponent"} {game.oppScore || 0}
+                </p>
+                {inningsInOrder.map((inning) => (
+                  <div key={inning} style={{ marginBottom: "14px" }}>
+                    <div style={{ fontSize: "14px", fontWeight: 800, borderBottom: "2px solid #222", marginBottom: "4px", paddingBottom: "2px" }}>
+                      Inning {inning}
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                      <tbody>
+                        {logsByInning[inning].map((entry) => {
+                          const p = playersById[entry.playerId];
+                          return (
+                            <tr key={entry.id}>
+                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{p?.name || "—"}</td>
+                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{resultLabel[entry.result]}</td>
+                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{entry.rbi ? `${entry.rbi} RBI` : ""}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
@@ -1319,6 +1646,7 @@ function TeamWorkspace({
   allLineups, setAllLineups,
   allHistorical, setAllHistorical,
   allTrash, setAllTrash,
+  allGameLogs, setAllGameLogs,
 }) {
   const players = allPlayers[teamId] || [];
   const games = allGames[teamId] || [];
@@ -1326,6 +1654,7 @@ function TeamWorkspace({
   const lineups = allLineups[teamId] || {};
   const historical = allHistorical[teamId] || {};
   const trashedGames = allTrash[teamId] || [];
+  const gameLogs = allGameLogs[teamId] || {};
 
   const [tab, setTab] = useState("team");
   const [openPlayerId, setOpenPlayerId] = useState(null);
@@ -1337,6 +1666,7 @@ function TeamWorkspace({
   const setLineupsState = (next) => { const nextAll = { ...allLineups, [teamId]: next }; setAllLineups(nextAll); saveKey(KEYS.LINEUPS, nextAll); };
   const setHistoricalState = (next) => { const nextAll = { ...allHistorical, [teamId]: next }; setAllHistorical(nextAll); saveKey(KEYS.HISTORICAL, nextAll); };
   const setTrashState = (next) => { const nextAll = { ...allTrash, [teamId]: next }; setAllTrash(nextAll); saveKey(KEYS.TRASH, nextAll); };
+  const setGameLogsState = (next) => { const nextAll = { ...allGameLogs, [teamId]: next }; setAllGameLogs(nextAll); saveKey(KEYS.GAMELOGS, nextAll); };
 
   const addPlayer = (name, gender, skillTier) => {
     const next = [...players, { id: uid("p"), name, gender, skillTier: skillTier || null, skillNote: "" }];
@@ -1368,7 +1698,7 @@ function TeamWorkspace({
     if (!game) return;
     const gameStats = {};
     Object.entries(stats).forEach(([k, v]) => { if (k.split("::")[0] === id) gameStats[k] = v; });
-    const trashEntry = { game, stats: gameStats, lineup: lineups[id] || null, deletedAt: new Date().toISOString() };
+    const trashEntry = { game, stats: gameStats, lineup: lineups[id] || null, gameLog: gameLogs[id] || null, deletedAt: new Date().toISOString() };
     setTrashState([...trashedGames, trashEntry]);
 
     const next = games.filter((g) => g.id !== id);
@@ -1378,6 +1708,8 @@ function TeamWorkspace({
     setStatsState(nextStats);
     const nextLineups = { ...lineups }; delete nextLineups[id];
     setLineupsState(nextLineups);
+    const nextGameLogs = { ...gameLogs }; delete nextGameLogs[id];
+    setGameLogsState(nextGameLogs);
     if (openGameId === id) { setOpenGameId(null); }
   };
 
@@ -1387,6 +1719,7 @@ function TeamWorkspace({
     setGamesState([...games, entry.game]);
     setStatsState({ ...stats, ...entry.stats });
     if (entry.lineup) setLineupsState({ ...lineups, [gameId]: entry.lineup });
+    if (entry.gameLog) setGameLogsState({ ...gameLogs, [gameId]: entry.gameLog });
     setTrashState(trashedGames.filter((t) => t.game.id !== gameId));
   };
 
@@ -1409,6 +1742,84 @@ function TeamWorkspace({
 
   const updateHistorical = (playerId, line) => {
     setHistoricalState({ ...historical, [playerId]: { ...emptyHistLine, ...line } });
+  };
+
+  const updateGameLive = (gameId, patch) => {
+    const next = games.map((g) => (g.id === gameId ? { ...g, ...patch } : g));
+    setGamesState(next);
+  };
+
+  const battingOrderFor = (game) => {
+    const lineupOrder = lineups[game.id];
+    if (lineupOrder && lineupOrder.length) return lineupOrder;
+    return game.roster || [];
+  };
+
+  const logPlay = (game, playerId, result, rbi = 0) => {
+    // Update the player's aggregate game stat line, same effect as the steppers.
+    const current = lineFor(stats, game.id, playerId);
+    const fieldByResult = { "1B": "s", "2B": "d", "3B": "t", HR: "hr" };
+    const patch = { ab: (Number(current.ab) || 0) + 1 };
+    if (fieldByResult[result]) {
+      const f = fieldByResult[result];
+      patch[f] = (Number(current[f]) || 0) + 1;
+    }
+    if (rbi) patch.rbi = (Number(current.rbi) || 0) + rbi;
+    updateLine(game.id, playerId, { ...current, ...patch });
+
+    // Append to the play-by-play log for the inning-by-inning report.
+    const inning = game.liveInning || 1;
+    const entry = { id: uid("play"), inning, playerId, result, rbi };
+    const nextLog = { ...gameLogs, [game.id]: [...(gameLogs[game.id] || []), entry] };
+    setGameLogsState(nextLog);
+
+    // Advance whose turn it is, and credit the team's score for any RBIs, in one update.
+    const order = battingOrderFor(game);
+    const livePatch = {};
+    if (order.length > 0) {
+      const curIdx = game.liveBatterIdx || 0;
+      livePatch.liveBatterIdx = (curIdx + 1) % order.length;
+    }
+    if (rbi) livePatch.ourScore = Math.max(0, (game.ourScore || 0) + rbi);
+    if (Object.keys(livePatch).length) updateGameLive(game.id, livePatch);
+  };
+
+  const adjustPlayRbi = (game, entryId, delta) => {
+    const log = gameLogs[game.id] || [];
+    const entry = log.find((e) => e.id === entryId);
+    if (!entry) return;
+    const newRbi = Math.max(0, (entry.rbi || 0) + delta);
+    const appliedDelta = newRbi - (entry.rbi || 0);
+    const nextLog = log.map((e) => (e.id === entryId ? { ...e, rbi: newRbi } : e));
+    setGameLogsState({ ...gameLogs, [game.id]: nextLog });
+
+    // Keep the player's aggregate RBI total, and the team's live score, in sync with this specific play.
+    const current = lineFor(stats, game.id, entry.playerId);
+    const nextPlayerRbi = Math.max(0, (Number(current.rbi) || 0) + appliedDelta);
+    updateLine(game.id, entry.playerId, { ...current, rbi: nextPlayerRbi });
+    updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) + appliedDelta) });
+  };
+
+  const deletePlay = (game, entryId) => {
+    const log = gameLogs[game.id] || [];
+    const entry = log.find((e) => e.id === entryId);
+    if (!entry) return;
+
+    // Reverse this play's effect on the player's aggregate stat line.
+    const current = lineFor(stats, game.id, entry.playerId);
+    const fieldByResult = { "1B": "s", "2B": "d", "3B": "t", HR: "hr" };
+    const patch = { ab: Math.max(0, (Number(current.ab) || 0) - 1) };
+    if (fieldByResult[entry.result]) {
+      const f = fieldByResult[entry.result];
+      patch[f] = Math.max(0, (Number(current[f]) || 0) - 1);
+    }
+    patch.rbi = Math.max(0, (Number(current.rbi) || 0) - (entry.rbi || 0));
+    updateLine(game.id, entry.playerId, { ...current, ...patch });
+
+    // Reverse this play's contribution to the team's live score.
+    if (entry.rbi) updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - entry.rbi) });
+
+    setGameLogsState({ ...gameLogs, [game.id]: log.filter((e) => e.id !== entryId) });
   };
 
   const openPlayer = players.find((p) => p.id === openPlayerId);
@@ -1455,7 +1866,21 @@ function TeamWorkspace({
           />
         )}
         {tab === "games" && openGame && (
-          <GameDetailView game={openGame} players={players} stats={stats} lineups={lineups} onBack={() => setOpenGameId(null)} setRoster={setRoster} updateLine={updateLine} />
+          <GameDetailView
+            game={openGame}
+            players={players}
+            stats={stats}
+            lineups={lineups}
+            gameLog={gameLogs[openGame.id] || []}
+            onBack={() => setOpenGameId(null)}
+            setRoster={setRoster}
+            updateLine={updateLine}
+            updateGameLive={updateGameLive}
+            logPlay={logPlay}
+            adjustPlayRbi={adjustPlayRbi}
+            deletePlay={deletePlay}
+            teamName={teamName}
+          />
         )}
 
         {tab === "lineup" && (
@@ -1485,13 +1910,14 @@ export default function App() {
   const [allLineups, setAllLineups] = useState({});
   const [allHistorical, setAllHistorical] = useState({});
   const [allTrash, setAllTrash] = useState({});
+  const [allGameLogs, setAllGameLogs] = useState({});
 
   useEffect(() => {
     (async () => {
       // 1) Already on shared storage? Just load and go.
       const sharedTeamsExist = await existsRaw(KEYS.TEAMS, true);
       if (sharedTeamsExist) {
-        const [t, p, g, s, l, h, tr] = await Promise.all([
+        const [t, p, g, s, l, h, tr, gl] = await Promise.all([
           loadRaw(KEYS.TEAMS, true, []),
           loadRaw(KEYS.PLAYERS, true, {}),
           loadRaw(KEYS.GAMES, true, {}),
@@ -1499,8 +1925,9 @@ export default function App() {
           loadRaw(KEYS.LINEUPS, true, {}),
           loadRaw(KEYS.HISTORICAL, true, {}),
           loadRaw(KEYS.TRASH, true, {}),
+          loadRaw(KEYS.GAMELOGS, true, {}),
         ]);
-        setTeams(t); setAllPlayers(p); setAllGames(g); setAllStats(s); setAllLineups(l); setAllHistorical(h); setAllTrash(tr);
+        setTeams(t); setAllPlayers(p); setAllGames(g); setAllStats(s); setAllLineups(l); setAllHistorical(h); setAllTrash(tr); setAllGameLogs(gl);
         if (t.length === 1) setActiveTeamId(t[0].id);
         setLoading(false);
         return;
@@ -1510,7 +1937,7 @@ export default function App() {
       // just before switching to shared storage) and copy it over.
       const privateTeamsExist = await existsRaw(KEYS.TEAMS, false);
       if (privateTeamsExist) {
-        const [t, p, g, s, l, h, tr] = await Promise.all([
+        const [t, p, g, s, l, h, tr, gl] = await Promise.all([
           loadRaw(KEYS.TEAMS, false, []),
           loadRaw(KEYS.PLAYERS, false, {}),
           loadRaw(KEYS.GAMES, false, {}),
@@ -1518,6 +1945,7 @@ export default function App() {
           loadRaw(KEYS.LINEUPS, false, {}),
           loadRaw(KEYS.HISTORICAL, false, {}),
           loadRaw(KEYS.TRASH, false, {}),
+          loadRaw(KEYS.GAMELOGS, false, {}),
         ]);
         await Promise.all([
           saveKey(KEYS.TEAMS, t),
@@ -1527,8 +1955,9 @@ export default function App() {
           saveKey(KEYS.LINEUPS, l),
           saveKey(KEYS.HISTORICAL, h),
           saveKey(KEYS.TRASH, tr),
+          saveKey(KEYS.GAMELOGS, gl),
         ]);
-        setTeams(t); setAllPlayers(p); setAllGames(g); setAllStats(s); setAllLineups(l); setAllHistorical(h); setAllTrash(tr);
+        setTeams(t); setAllPlayers(p); setAllGames(g); setAllStats(s); setAllLineups(l); setAllHistorical(h); setAllTrash(tr); setAllGameLogs(gl);
         if (t.length === 1) setActiveTeamId(t[0].id);
         setLoading(false);
         return;
@@ -1554,9 +1983,10 @@ export default function App() {
         const newLineups = { [legacyId]: ll };
         const newHistorical = { [legacyId]: lh };
         const newTrash = { [legacyId]: lt };
+        const newGameLogs = { [legacyId]: [] };
         setTeams(newTeams); setActiveTeamId(legacyId);
         setAllPlayers(newPlayers); setAllGames(newGames); setAllStats(newStats);
-        setAllLineups(newLineups); setAllHistorical(newHistorical); setAllTrash(newTrash);
+        setAllLineups(newLineups); setAllHistorical(newHistorical); setAllTrash(newTrash); setAllGameLogs(newGameLogs);
         await Promise.all([
           saveKey(KEYS.TEAMS, newTeams),
           saveKey(KEYS.PLAYERS, newPlayers),
@@ -1565,13 +1995,14 @@ export default function App() {
           saveKey(KEYS.LINEUPS, newLineups),
           saveKey(KEYS.HISTORICAL, newHistorical),
           saveKey(KEYS.TRASH, newTrash),
+          saveKey(KEYS.GAMELOGS, newGameLogs),
         ]);
         setLoading(false);
         return;
       }
 
       // 4) Brand new, nothing anywhere.
-      setTeams([]); setAllPlayers({}); setAllGames({}); setAllStats({}); setAllLineups({}); setAllHistorical({}); setAllTrash({});
+      setTeams([]); setAllPlayers({}); setAllGames({}); setAllStats({}); setAllLineups({}); setAllHistorical({}); setAllTrash({}); setAllGameLogs({});
       setLoading(false);
     })();
   }, []);
@@ -1627,6 +2058,7 @@ export default function App() {
       allLineups={allLineups} setAllLineups={setAllLineups}
       allHistorical={allHistorical} setAllHistorical={setAllHistorical}
       allTrash={allTrash} setAllTrash={setAllTrash}
+      allGameLogs={allGameLogs} setAllGameLogs={setAllGameLogs}
     />
   );
 }
