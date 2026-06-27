@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Plus, Minus, Trash2, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, RefreshCw, Save, Users, ClipboardList, ListOrdered, Table2, X, RotateCcw, Pencil, Printer } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { Plus, Minus, Trash2, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, RefreshCw, Save, Users, ClipboardList, ListOrdered, Table2, X, RotateCcw, Pencil, Printer, GripVertical, Shield } from "lucide-react";
 
 /* ---------------------------------------------------------------------------
    HELPERS
 --------------------------------------------------------------------------- */
 
-const KEYS = { TEAMS: "teams", PLAYERS: "players", GAMES: "games", STATS: "stats", LINEUPS: "lineups", HISTORICAL: "historical", TRASH: "trashedGames", GAMELOGS: "gameLogs" };
+const KEYS = { TEAMS: "teams", PLAYERS: "players", GAMES: "games", STATS: "stats", LINEUPS: "lineups", HISTORICAL: "historical", TRASH: "trashedGames", GAMELOGS: "gameLogs", DEFENSE: "defenseLineups" };
 
 function uid(prefix) {
   return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -273,6 +273,154 @@ function buildLineup(selectedIds, playersById, statsCumulativeById) {
   // the hard male rule once more as a final safety net.
   order = fixGenderRuleHard(order, playersById, "M", 3);
   return order;
+}
+
+/* ---------------------------------------------------------------------------
+   DEFENSIVE LINEUP BUILDER
+--------------------------------------------------------------------------- */
+
+const DEFENSE_POSITIONS = ["C", "1B", "2B", "SS", "3B", "LF", "CF", "RF", "LR", "RR"];
+const DEFENSE_POSITION_LABELS = {
+  C: "Catcher", "1B": "First Base", "2B": "Second Base", SS: "Shortstop", "3B": "Third Base",
+  LF: "Left Field", CF: "Center Field", RF: "Right Field", LR: "Left Rover", RR: "Right Rover",
+};
+const TOTAL_INNINGS = 8;
+const GIRLS_TARGET_PER_INNING = 4;
+const BOYS_TARGET_PER_INNING = 6;
+// Innings 1, 7, and 8 are our strongest spots; 8 is no-mercy so it always gets first pick
+// of the best available players. 2 and 6 are our historically weakest innings, so they get
+// a meaningful (if smaller) boost too, rather than being treated as throwaway innings.
+const INNING_IMPORTANCE = { 1: 0.75, 2: 0.5, 3: 0.35, 4: 0.35, 5: 0.35, 6: 0.5, 7: 0.8, 8: 1.0 };
+
+function defenseKey(position, inning) {
+  return `${position}::${inning}`;
+}
+
+function posRating(player, position) {
+  return (player?.positionRatings && player.positionRatings[position]) || 1;
+}
+
+function defenseOverallStrength(player) {
+  const ratings = Object.values(player?.positionRatings || {});
+  if (!ratings.length) return 1;
+  return ratings.reduce((a, b) => a + b, 0) / ratings.length;
+}
+
+function buildDefensiveLineup(selectedIds, playersById) {
+  const girlsPool = selectedIds.filter((id) => playersById[id]?.gender === "F");
+  const boysPool = selectedIds.filter((id) => playersById[id]?.gender === "M");
+
+  // Figure out the actual gender split to target, in case there aren't enough
+  // of one gender to hit the usual 4/6 (rather than ever double-booking someone).
+  let girlSlots = Math.min(GIRLS_TARGET_PER_INNING, girlsPool.length);
+  let boySlots = DEFENSE_POSITIONS.length - girlSlots;
+  if (boySlots > boysPool.length) {
+    boySlots = boysPool.length;
+    girlSlots = Math.min(DEFENSE_POSITIONS.length - boySlots, girlsPool.length);
+  }
+
+  const inningCount = {};
+  const consecutiveStreak = {};
+  selectedIds.forEach((id) => { inningCount[id] = 0; consecutiveStreak[id] = 0; });
+
+  const score = (playerId, position, inning) => {
+    const player = playersById[playerId];
+    const fit = posRating(player, position);
+    const strength = defenseOverallStrength(player);
+    const importanceBonus = strength * INNING_IMPORTANCE[inning] * 2;
+
+    const needed = Math.max(0, 2 - inningCount[playerId]);
+    const remaining = TOTAL_INNINGS - inning + 1;
+    let coverageBonus = 0;
+    if (needed > 0) coverageBonus = needed >= remaining ? 50 : 6;
+
+    const isExempt = player?.gender === "F" || strength >= 4;
+    const cap = isExempt ? 3 : 2;
+    const wouldBeStreak = consecutiveStreak[playerId] + 1;
+    let streakPenalty = 0;
+    if (wouldBeStreak > cap) streakPenalty = (wouldBeStreak - cap) * (isExempt ? 2 : 5);
+
+    return fit + importanceBonus + coverageBonus - streakPenalty;
+  };
+
+  const assignments = {};
+  const playedThisInning = {}; // inning -> Set of playerIds assigned
+
+  for (let inning = 1; inning <= TOTAL_INNINGS; inning++) {
+    const used = new Set();
+    playedThisInning[inning] = used;
+
+    // Decide which positions get a girl this inning vs a boy, based on where
+    // girls have the biggest relative advantage over the best available boy.
+    const advantage = DEFENSE_POSITIONS.map((pos) => {
+      const bestGirl = girlsPool.length ? Math.max(...girlsPool.map((id) => score(id, pos, inning))) : -Infinity;
+      const bestBoy = boysPool.length ? Math.max(...boysPool.map((id) => score(id, pos, inning))) : -Infinity;
+      return { pos, advantage: bestGirl - bestBoy };
+    });
+    const girlPositions = new Set(
+      [...advantage].sort((a, b) => b.advantage - a.advantage).slice(0, girlSlots).map((a) => a.pos)
+    );
+
+    const fillFromPool = (positions, pool) => {
+      const remainingPositions = [...positions];
+      while (remainingPositions.length) {
+        // Fill whichever remaining position currently has the strongest best-fit candidate first,
+        // so the best matches get locked in before weaker leftovers force compromises.
+        let bestPos = null, bestPosScore = -Infinity, bestCandidate = null;
+        remainingPositions.forEach((pos) => {
+          pool.forEach((id) => {
+            if (used.has(id)) return;
+            const s = score(id, pos, inning);
+            if (s > bestPosScore) { bestPosScore = s; bestPos = pos; bestCandidate = id; }
+          });
+        });
+        if (!bestPos || !bestCandidate) break; // ran out of distinct candidates
+        assignments[defenseKey(bestPos, inning)] = bestCandidate;
+        used.add(bestCandidate);
+        remainingPositions.splice(remainingPositions.indexOf(bestPos), 1);
+      }
+    };
+
+    const girlPosList = DEFENSE_POSITIONS.filter((p) => girlPositions.has(p));
+    const boyPosList = DEFENSE_POSITIONS.filter((p) => !girlPositions.has(p));
+    fillFromPool(girlPosList, girlsPool);
+    fillFromPool(boyPosList, boysPool);
+
+    selectedIds.forEach((id) => {
+      if (used.has(id)) {
+        inningCount[id] += 1;
+        consecutiveStreak[id] += 1;
+      } else {
+        consecutiveStreak[id] = 0;
+      }
+    });
+  }
+
+  return assignments;
+}
+
+function defenseConflictsByInning(assignments) {
+  // Returns { inning: Set(playerIds that appear more than once that inning) }
+  const conflicts = {};
+  for (let inning = 1; inning <= TOTAL_INNINGS; inning++) {
+    const seen = {};
+    DEFENSE_POSITIONS.forEach((pos) => {
+      const id = assignments[defenseKey(pos, inning)];
+      if (!id) return;
+      seen[id] = (seen[id] || 0) + 1;
+    });
+    conflicts[inning] = new Set(Object.keys(seen).filter((id) => seen[id] > 1));
+  }
+  return conflicts;
+}
+
+function defenseInningCounts(assignments, selectedIds) {
+  const counts = {};
+  selectedIds.forEach((id) => { counts[id] = 0; });
+  Object.values(assignments).forEach((id) => {
+    if (id) counts[id] = (counts[id] || 0) + 1;
+  });
+  return counts;
 }
 
 /* ---------------------------------------------------------------------------
@@ -723,6 +871,57 @@ function PlayerView({ player, games, stats, historical, onBack, updateLine, upda
           className="w-full rounded-md border px-2 py-1.5 text-sm"
           style={{ borderColor: COLORS.line }}
         />
+      </div>
+
+      <div className="rounded-lg p-3 mb-6" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+        <h3 className="text-sm font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.field }}>Defensive positions</h3>
+        <p className="text-xs mb-3" style={{ color: COLORS.muted }}>
+          Check off any position this player can play, then rate them 1 (weakest) to 5 (strongest) at it. The defensive lineup builder uses
+          these to decide who fits where each inning.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {DEFENSE_POSITIONS.map((pos) => {
+            const rating = player.positionRatings?.[pos];
+            const checked = rating != null;
+            return (
+              <div key={pos} className="flex items-center gap-2 p-2 rounded-md" style={{ background: "#F5F3FC", border: `1px solid ${COLORS.line}` }}>
+                <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      const next = { ...(player.positionRatings || {}) };
+                      if (e.target.checked) next[pos] = 3;
+                      else delete next[pos];
+                      updatePlayer(player.id, { positionRatings: next });
+                    }}
+                  />
+                  <span className="text-sm font-semibold" style={{ color: COLORS.ink }}>{DEFENSE_POSITION_LABELS[pos]}</span>
+                </label>
+                {checked && (
+                  <div className="flex gap-1">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => {
+                          const next = { ...(player.positionRatings || {}), [pos]: n };
+                          updatePlayer(player.id, { positionRatings: next });
+                        }}
+                        className="w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center"
+                        style={{
+                          background: rating === n ? COLORS.field : withAlpha(COLORS.field, 0.12),
+                          color: rating === n ? "white" : COLORS.field,
+                        }}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-6">
@@ -1344,6 +1543,37 @@ function LineupView({ players, games, stats, historical, lineups, saveLineup, te
     });
   };
 
+  const dragRef = useRef({ draggingId: null });
+  const [draggingId, setDraggingId] = useState(null);
+
+  const onDragHandlePointerDown = (e, id) => {
+    dragRef.current.draggingId = id;
+    setDraggingId(id);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onDragHandlePointerMove = (e) => {
+    if (!dragRef.current.draggingId) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const rowEl = el?.closest("[data-lineup-row-id]");
+    if (!rowEl) return;
+    const overId = rowEl.getAttribute("data-lineup-row-id");
+    if (overId && overId !== dragRef.current.draggingId) {
+      setOrder((cur) => {
+        const fromIdx = cur.indexOf(dragRef.current.draggingId);
+        const toIdx = cur.indexOf(overId);
+        if (fromIdx === -1 || toIdx === -1) return cur;
+        const next = [...cur];
+        next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, dragRef.current.draggingId);
+        return next;
+      });
+    }
+  };
+  const onDragHandlePointerUp = () => {
+    dragRef.current.draggingId = null;
+    setDraggingId(null);
+  };
+
   const genders = order ? order.map((id) => playersById[id]?.gender || "M") : [];
   const maxMaleRun = order ? maxRunCyclic(genders, "M") : 0;
   const maxFemaleRun = order ? maxRunCyclic(genders, "F") : 0;
@@ -1397,13 +1627,34 @@ function LineupView({ players, games, stats, historical, lineups, saveLineup, te
               </span>
             </div>
           </div>
+          <p className="text-xs mb-2" style={{ color: COLORS.muted }}>Drag the grip handle to reorder, or use the arrows.</p>
           <ol className="grid gap-1.5">
             {order.map((id, idx) => {
               const p = playersById[id];
               const c = cumulativeFor(id, stats, historical);
               const estimated = c.ab === 0;
+              const isDragging = draggingId === id;
               return (
-                <li key={id} className="flex items-center gap-3 px-3 py-2 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                <li
+                  key={id}
+                  data-lineup-row-id={id}
+                  className="flex items-center gap-3 px-3 py-2 rounded-md"
+                  style={{
+                    background: isDragging ? "#EFF1FE" : "white",
+                    border: `1px solid ${isDragging ? COLORS.clay : COLORS.line}`,
+                    boxShadow: isDragging ? "0 4px 10px rgba(0,0,0,0.12)" : "none",
+                    opacity: isDragging ? 0.85 : 1,
+                  }}
+                >
+                  <button
+                    onPointerDown={(e) => onDragHandlePointerDown(e, id)}
+                    onPointerMove={onDragHandlePointerMove}
+                    onPointerUp={onDragHandlePointerUp}
+                    className="cursor-grab active:cursor-grabbing touch-none text-stone-400 hover:text-stone-600"
+                    style={{ touchAction: "none" }}
+                  >
+                    <GripVertical size={16} />
+                  </button>
                   <span className="font-mono font-extrabold w-6 text-center" style={{ color: COLORS.clay }}>{idx + 1}</span>
                   <span className="flex-1 font-semibold" style={{ color: COLORS.ink }}>{p?.name || "—"}</span>
                   <GenderPill gender={p?.gender} />
@@ -1537,6 +1788,192 @@ function HistoryView({ players, historical, updateHistorical }) {
   );
 }
 
+/* ---------------------------------------------------------------------------
+   DEFENSIVE LINEUP BUILDER
+--------------------------------------------------------------------------- */
+
+function DefenseView({ players, games, defenseLineups, setDefenseCell, generateDefenseLineup, clearDefenseLineup, teamName }) {
+  const [gameId, setGameId] = useState("");
+  const [checked, setChecked] = useState(new Set());
+  const [overrideMin, setOverrideMin] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  const sortedGames = [...games].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const playersById = useMemo(() => Object.fromEntries(players.map((p) => [p.id, p])), [players]);
+
+  useEffect(() => {
+    if (gameId) {
+      const g = games.find((x) => x.id === gameId);
+      setChecked(new Set(g?.roster || []));
+    }
+  }, [gameId]);
+
+  const togglePick = (id) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const assignments = (gameId && defenseLineups[gameId]) || {};
+  const hasAssignments = Object.keys(assignments).length > 0;
+  const selectedIds = Array.from(checked);
+
+  const conflicts = useMemo(() => defenseConflictsByInning(assignments), [assignments]);
+  const counts = useMemo(() => defenseInningCounts(assignments, selectedIds), [assignments, selectedIds]);
+  const anyConflict = Object.values(conflicts).some((s) => s.size > 0);
+  const underMin = selectedIds.filter((id) => (counts[id] || 0) < 2);
+  const canSave = !anyConflict && (underMin.length === 0 || overrideMin);
+
+  return (
+    <div>
+      <h2 className="text-xl font-extrabold mb-1" style={{ color: COLORS.field }}>Defensive Lineup Builder</h2>
+      <p className="text-sm mb-4" style={{ color: "#6B6280" }}>
+        Builds out who plays where for all 8 innings: 4 girls and 6 guys on the field every inning, everyone getting at least 2 innings,
+        your strongest available defense in innings 1, 7, and especially 8 (no-mercy), and extra attention on innings 2 and 6 where we've
+        historically given up the most runs. It avoids stacking anyone more than 2 innings in a row, though strong players and girls get
+        more leeway there since we're often short on girls.
+      </p>
+
+      <div className="flex flex-wrap gap-3 mb-4">
+        <div>
+          <label className="text-xs font-bold uppercase" style={{ color: COLORS.field }}>Game</label>
+          <select value={gameId} onChange={(e) => setGameId(e.target.value)} className="block mt-1 rounded-md border px-2 py-1.5 text-sm" style={{ borderColor: COLORS.line }}>
+            <option value="">— select a game —</option>
+            {sortedGames.map((g) => <option key={g.id} value={g.id}>{g.date} {g.opponent ? `vs ${g.opponent}` : ""}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {!gameId ? (
+        <p className="text-sm text-stone-400">Pick a game above to build its defensive lineup.</p>
+      ) : (
+        <>
+          <p className="text-sm font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.field }}>Available players for this game</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+            {players.map((p) => (
+              <label key={p.id} className="flex items-center gap-2 p-2 rounded-md cursor-pointer" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                <input type="checkbox" checked={checked.has(p.id)} onChange={() => togglePick(p.id)} />
+                <span className="text-sm font-medium">{p.name}</span>
+                <GenderPill gender={p.gender} />
+              </label>
+            ))}
+          </div>
+
+          <div className="flex gap-2 mb-5 flex-wrap">
+            <Btn icon={RefreshCw} onClick={() => generateDefenseLineup(gameId, selectedIds)} disabled={selectedIds.length === 0}>
+              {hasAssignments ? "Regenerate" : "Generate Defensive Lineup"}
+            </Btn>
+            {hasAssignments && <Btn variant="ghost" icon={X} onClick={() => clearDefenseLineup(gameId)}>Clear</Btn>}
+          </div>
+
+          {hasAssignments && (
+            <div className="grid lg:grid-cols-[1fr_260px] gap-4">
+              <div>
+                <div className="rounded-lg overflow-hidden mb-1" style={{ border: `1px solid ${COLORS.line}` }}>
+                  <div className="text-center py-3 font-extrabold text-lg" style={{ background: "#DAD3F0", color: COLORS.field }}>
+                    Defensive Positions
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm" style={{ background: "white" }}>
+                      <thead>
+                        <tr style={{ background: "#EAE4F7" }}>
+                          <th className="px-2 py-2 text-left text-xs font-bold uppercase" style={{ color: COLORS.field }}>Position</th>
+                          {Array.from({ length: TOTAL_INNINGS }, (_, i) => i + 1).map((inning) => (
+                            <th key={inning} className="px-2 py-2 text-center text-xs font-bold uppercase" style={{ color: COLORS.field }}>{inning}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {DEFENSE_POSITIONS.map((pos) => (
+                          <tr key={pos} className="border-t" style={{ borderColor: COLORS.line }}>
+                            <td className="px-2 py-1.5 font-bold whitespace-nowrap" style={{ color: COLORS.ink }}>{pos}</td>
+                            {Array.from({ length: TOTAL_INNINGS }, (_, i) => i + 1).map((inning) => {
+                              const key = defenseKey(pos, inning);
+                              const playerId = assignments[key] || "";
+                              const isConflict = conflicts[inning]?.has(playerId);
+                              return (
+                                <td key={inning} className="px-1 py-1">
+                                  <select
+                                    value={playerId}
+                                    onChange={(e) => setDefenseCell(gameId, pos, inning, e.target.value)}
+                                    className="w-full rounded-md border px-1 py-1 text-xs"
+                                    style={{
+                                      borderColor: isConflict ? "#9B3A1F" : COLORS.line,
+                                      background: isConflict ? "#FCE8E2" : "white",
+                                      color: isConflict ? "#9B3A1F" : COLORS.ink,
+                                    }}
+                                  >
+                                    <option value="">—</option>
+                                    {selectedIds.map((id) => (
+                                      <option key={id} value={id}>{playersById[id]?.name || "?"}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                {anyConflict && (
+                  <p className="text-xs font-bold mt-2" style={{ color: "#9B3A1F" }}>
+                    A player is assigned to two positions in the same inning somewhere (highlighted in red). Fix those before saving.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <h3 className="text-sm font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.field }}>Innings Played</h3>
+                <div className="grid gap-1.5 mb-4">
+                  {selectedIds.map((id) => {
+                    const p = playersById[id];
+                    const n = counts[id] || 0;
+                    const color = n <= 1 ? "#9B3A1F" : n >= 5 ? COLORS.clay : COLORS.field;
+                    return (
+                      <div key={id} className="flex items-center justify-between px-2.5 py-1.5 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                        <span className="text-sm font-semibold flex items-center gap-1.5" style={{ color: COLORS.ink }}>
+                          {p?.name} <GenderPill gender={p?.gender} />
+                        </span>
+                        <span className="text-xs font-extrabold px-2 py-0.5 rounded-full" style={{ background: color, color: "white" }}>{n}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <label className="flex items-center gap-2 mb-2 text-xs font-bold" style={{ color: COLORS.muted }}>
+                  <input type="checkbox" checked={overrideMin} onChange={(e) => setOverrideMin(e.target.checked)} />
+                  Override minimum (2+ per player)
+                </label>
+                {!canSave && (
+                  <p className="text-xs mb-2" style={{ color: "#9B3A1F" }}>
+                    {anyConflict
+                      ? "Resolve the conflicting positions above first."
+                      : `${underMin.length} player${underMin.length === 1 ? "" : "s"} below the 2-inning minimum. Check the override box to save anyway.`}
+                  </p>
+                )}
+                <Btn
+                  disabled={!canSave}
+                  icon={Save}
+                  onClick={() => { setSavedFlash(true); setTimeout(() => setSavedFlash(false), 2200); }}
+                >
+                  Save Defensive Lineup
+                </Btn>
+                {savedFlash && (
+                  <p className="text-xs font-bold mt-2" style={{ color: COLORS.field }}>✓ Saved. Every change above already saves automatically, this just confirms everything checks out.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 
 /* ---------------------------------------------------------------------------
    TEAMS HOME (pick a team, or start a new one)
@@ -1647,6 +2084,7 @@ function TeamWorkspace({
   allHistorical, setAllHistorical,
   allTrash, setAllTrash,
   allGameLogs, setAllGameLogs,
+  allDefense, setAllDefense,
 }) {
   const players = allPlayers[teamId] || [];
   const games = allGames[teamId] || [];
@@ -1655,6 +2093,7 @@ function TeamWorkspace({
   const historical = allHistorical[teamId] || {};
   const trashedGames = allTrash[teamId] || [];
   const gameLogs = allGameLogs[teamId] || {};
+  const defenseLineups = allDefense[teamId] || {};
 
   const [tab, setTab] = useState("team");
   const [openPlayerId, setOpenPlayerId] = useState(null);
@@ -1667,6 +2106,7 @@ function TeamWorkspace({
   const setHistoricalState = (next) => { const nextAll = { ...allHistorical, [teamId]: next }; setAllHistorical(nextAll); saveKey(KEYS.HISTORICAL, nextAll); };
   const setTrashState = (next) => { const nextAll = { ...allTrash, [teamId]: next }; setAllTrash(nextAll); saveKey(KEYS.TRASH, nextAll); };
   const setGameLogsState = (next) => { const nextAll = { ...allGameLogs, [teamId]: next }; setAllGameLogs(nextAll); saveKey(KEYS.GAMELOGS, nextAll); };
+  const setDefenseState = (next) => { const nextAll = { ...allDefense, [teamId]: next }; setAllDefense(nextAll); saveKey(KEYS.DEFENSE, nextAll); };
 
   const addPlayer = (name, gender, skillTier) => {
     const next = [...players, { id: uid("p"), name, gender, skillTier: skillTier || null, skillNote: "" }];
@@ -1698,7 +2138,10 @@ function TeamWorkspace({
     if (!game) return;
     const gameStats = {};
     Object.entries(stats).forEach(([k, v]) => { if (k.split("::")[0] === id) gameStats[k] = v; });
-    const trashEntry = { game, stats: gameStats, lineup: lineups[id] || null, gameLog: gameLogs[id] || null, deletedAt: new Date().toISOString() };
+    const trashEntry = {
+      game, stats: gameStats, lineup: lineups[id] || null, gameLog: gameLogs[id] || null,
+      defense: defenseLineups[id] || null, deletedAt: new Date().toISOString(),
+    };
     setTrashState([...trashedGames, trashEntry]);
 
     const next = games.filter((g) => g.id !== id);
@@ -1710,6 +2153,8 @@ function TeamWorkspace({
     setLineupsState(nextLineups);
     const nextGameLogs = { ...gameLogs }; delete nextGameLogs[id];
     setGameLogsState(nextGameLogs);
+    const nextDefense = { ...defenseLineups }; delete nextDefense[id];
+    setDefenseState(nextDefense);
     if (openGameId === id) { setOpenGameId(null); }
   };
 
@@ -1720,6 +2165,7 @@ function TeamWorkspace({
     setStatsState({ ...stats, ...entry.stats });
     if (entry.lineup) setLineupsState({ ...lineups, [gameId]: entry.lineup });
     if (entry.gameLog) setGameLogsState({ ...gameLogs, [gameId]: entry.gameLog });
+    if (entry.defense) setDefenseState({ ...defenseLineups, [gameId]: entry.defense });
     setTrashState(trashedGames.filter((t) => t.game.id !== gameId));
   };
 
@@ -1738,6 +2184,23 @@ function TeamWorkspace({
 
   const saveLineup = (gameId, order) => {
     setLineupsState({ ...lineups, [gameId]: order });
+  };
+
+  const setDefenseCell = (gameId, position, inning, playerId) => {
+    const current = defenseLineups[gameId] || {};
+    const next = { ...current, [defenseKey(position, inning)]: playerId || null };
+    setDefenseState({ ...defenseLineups, [gameId]: next });
+  };
+
+  const generateDefenseLineup = (gameId, selectedIds) => {
+    const playersById = Object.fromEntries(players.map((p) => [p.id, p]));
+    const assignments = buildDefensiveLineup(selectedIds, playersById);
+    setDefenseState({ ...defenseLineups, [gameId]: assignments });
+  };
+
+  const clearDefenseLineup = (gameId) => {
+    const next = { ...defenseLineups }; delete next[gameId];
+    setDefenseState(next);
   };
 
   const updateHistorical = (playerId, line) => {
@@ -1841,6 +2304,7 @@ function TeamWorkspace({
             <TabBtn active={tab === "games"} onClick={() => { setTab("games"); setOpenGameId(null); }} icon={ClipboardList}>Games</TabBtn>
             <TabBtn active={tab === "lineup"} onClick={() => setTab("lineup")} icon={ListOrdered}>Lineup Builder</TabBtn>
             <TabBtn active={tab === "history"} onClick={() => setTab("history")} icon={Users}>Last Season</TabBtn>
+            <TabBtn active={tab === "defense"} onClick={() => setTab("defense")} icon={Shield}>Defense</TabBtn>
           </div>
         </div>
       </div>
@@ -1890,6 +2354,18 @@ function TeamWorkspace({
         {tab === "history" && (
           <HistoryView players={players} historical={historical} updateHistorical={updateHistorical} />
         )}
+
+        {tab === "defense" && (
+          <DefenseView
+            players={players}
+            games={games}
+            defenseLineups={defenseLineups}
+            setDefenseCell={setDefenseCell}
+            generateDefenseLineup={generateDefenseLineup}
+            clearDefenseLineup={clearDefenseLineup}
+            teamName={teamName}
+          />
+        )}
       </div>
     </div>
   );
@@ -1911,13 +2387,14 @@ export default function App() {
   const [allHistorical, setAllHistorical] = useState({});
   const [allTrash, setAllTrash] = useState({});
   const [allGameLogs, setAllGameLogs] = useState({});
+  const [allDefense, setAllDefense] = useState({});
 
   useEffect(() => {
     (async () => {
       // 1) Already on shared storage? Just load and go.
       const sharedTeamsExist = await existsRaw(KEYS.TEAMS, true);
       if (sharedTeamsExist) {
-        const [t, p, g, s, l, h, tr, gl] = await Promise.all([
+        const [t, p, g, s, l, h, tr, gl, d] = await Promise.all([
           loadRaw(KEYS.TEAMS, true, []),
           loadRaw(KEYS.PLAYERS, true, {}),
           loadRaw(KEYS.GAMES, true, {}),
@@ -1926,8 +2403,9 @@ export default function App() {
           loadRaw(KEYS.HISTORICAL, true, {}),
           loadRaw(KEYS.TRASH, true, {}),
           loadRaw(KEYS.GAMELOGS, true, {}),
+          loadRaw(KEYS.DEFENSE, true, {}),
         ]);
-        setTeams(t); setAllPlayers(p); setAllGames(g); setAllStats(s); setAllLineups(l); setAllHistorical(h); setAllTrash(tr); setAllGameLogs(gl);
+        setTeams(t); setAllPlayers(p); setAllGames(g); setAllStats(s); setAllLineups(l); setAllHistorical(h); setAllTrash(tr); setAllGameLogs(gl); setAllDefense(d);
         if (t.length === 1) setActiveTeamId(t[0].id);
         setLoading(false);
         return;
@@ -2002,7 +2480,7 @@ export default function App() {
       }
 
       // 4) Brand new, nothing anywhere.
-      setTeams([]); setAllPlayers({}); setAllGames({}); setAllStats({}); setAllLineups({}); setAllHistorical({}); setAllTrash({}); setAllGameLogs({});
+      setTeams([]); setAllPlayers({}); setAllGames({}); setAllStats({}); setAllLineups({}); setAllHistorical({}); setAllTrash({}); setAllGameLogs({}); setAllDefense({});
       setLoading(false);
     })();
   }, []);
@@ -2059,6 +2537,7 @@ export default function App() {
       allHistorical={allHistorical} setAllHistorical={setAllHistorical}
       allTrash={allTrash} setAllTrash={setAllTrash}
       allGameLogs={allGameLogs} setAllGameLogs={setAllGameLogs}
+      allDefense={allDefense} setAllDefense={setAllDefense}
     />
   );
 }
