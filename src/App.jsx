@@ -1066,7 +1066,7 @@ function GamesListView({ games, trashedGames, lineups, onOpen, addGame, deleteGa
   );
 }
 
-function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, logPlay, adjustPlayRbi, deletePlay, teamName }) {
+function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, logPlay, adjustPlayRbi, deletePlay, addManualRun, teamName }) {
   const [pickerOpen, setPickerOpen] = useState((game.roster || []).length === 0);
   const [checked, setChecked] = useState(new Set(game.roster || []));
   const [showLog, setShowLog] = useState(true);
@@ -1120,7 +1120,8 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
   });
   const inningsInOrder = Object.keys(logsByInning).map(Number).sort((a, b) => a - b);
 
-  const resultLabel = { OUT: "Out", "1B": "Single", "2B": "Double", "3B": "Triple", HR: "Home Run" };
+  const resultLabel = { OUT: "Out", "1B": "Single", "2B": "Double", "3B": "Triple", HR: "Home Run", RUN: "Run scored" };
+  const inningRuns = (inning) => (logsByInning[inning] || []).reduce((sum, e) => sum + (e.result === "RUN" ? 1 : (e.rbi || 0)), 0);
   const resultColor = { OUT: COLORS.ink, "1B": COLORS.turf, "2B": COLORS.turf, "3B": COLORS.turf, HR: COLORS.clay };
 
   return (
@@ -1319,7 +1320,7 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
             </p>
             <Btn variant="ghost" small onClick={() => { setChecked(new Set(rosterIds)); setPickerOpen(true); }}>Edit roster</Btn>
           </div>
-          <GameStatsTable game={game} players={rosterPlayers} stats={stats} updateLine={updateLine} lineupOrder={lineupOrder} />
+          <GameStatsTable game={game} players={rosterPlayers} stats={stats} updateLine={updateLine} lineupOrder={lineupOrder} gameLog={gameLog} addManualRun={addManualRun} />
 
           {/* PLAY-BY-PLAY LOG, GROUPED BY INNING */}
           <div className="mt-6">
@@ -1340,7 +1341,10 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                 <div className="grid gap-3">
                   {inningsInOrder.map((inning) => (
                     <div key={inning}>
-                      <div className="text-xs font-bold uppercase tracking-wide mb-1" style={{ color: COLORS.clay }}>Inning {inning}</div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.clay }}>Inning {inning}</span>
+                        <span className="text-xs font-bold" style={{ color: COLORS.muted }}>{inningRuns(inning)} run{inningRuns(inning) === 1 ? "" : "s"} this inning</span>
+                      </div>
                       <div className="grid gap-1.5">
                         {logsByInning[inning].map((entry) => {
                           const p = playersById[entry.playerId];
@@ -1353,12 +1357,14 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                               >
                                 {resultLabel[entry.result]}
                               </span>
-                              <span className="flex items-center gap-1 text-xs" style={{ color: COLORS.muted }}>
-                                RBI
-                                <button onClick={() => adjustPlayRbi(game, entry.id, -1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Minus size={11} /></button>
-                                <span className="w-4 text-center font-mono">{entry.rbi || 0}</span>
-                                <button onClick={() => adjustPlayRbi(game, entry.id, 1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Plus size={11} /></button>
-                              </span>
+                              {entry.result !== "RUN" && (
+                                <span className="flex items-center gap-1 text-xs" style={{ color: COLORS.muted }}>
+                                  RBI
+                                  <button onClick={() => adjustPlayRbi(game, entry.id, -1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Minus size={11} /></button>
+                                  <span className="w-4 text-center font-mono">{entry.rbi || 0}</span>
+                                  <button onClick={() => adjustPlayRbi(game, entry.id, 1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Plus size={11} /></button>
+                                </span>
+                              )}
                               <ConfirmDelete label="Remove" onConfirm={() => deletePlay(game, entry.id)} />
                             </div>
                           );
@@ -1398,8 +1404,9 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                 </p>
                 {inningsInOrder.map((inning) => (
                   <div key={inning} style={{ marginBottom: "14px" }}>
-                    <div style={{ fontSize: "14px", fontWeight: 800, borderBottom: "2px solid #222", marginBottom: "4px", paddingBottom: "2px" }}>
-                      Inning {inning}
+                    <div style={{ fontSize: "14px", fontWeight: 800, borderBottom: "2px solid #222", marginBottom: "4px", paddingBottom: "2px", display: "flex", justifyContent: "space-between" }}>
+                      <span>Inning {inning}</span>
+                      <span>{inningRuns(inning)} run{inningRuns(inning) === 1 ? "" : "s"}</span>
                     </div>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                       <tbody>
@@ -1409,7 +1416,7 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                             <tr key={entry.id}>
                               <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{p?.name || "—"}</td>
                               <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{resultLabel[entry.result]}</td>
-                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{entry.rbi ? `${entry.rbi} RBI` : ""}</td>
+                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{entry.result !== "RUN" && entry.rbi ? `${entry.rbi} RBI` : ""}</td>
                             </tr>
                           );
                         })}
@@ -1426,13 +1433,15 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
   );
 }
 
-function GameStatsTable({ game, players, stats, updateLine, lineupOrder }) {
+function GameStatsTable({ game, players, stats, updateLine, lineupOrder, gameLog, addManualRun }) {
   const bump = (playerId, field, delta, alsoAB) => {
     const current = lineFor(stats, game.id, playerId);
     const patch = { [field]: Math.max(0, (Number(current[field]) || 0) + delta) };
     if (alsoAB) patch.ab = Math.max(0, (Number(current.ab) || 0) + delta);
     updateLine(game.id, playerId, { ...current, ...patch });
   };
+
+  const runsFor = (playerId) => (gameLog || []).filter((e) => e.result === "RUN" && e.playerId === playerId).length;
 
   const orderedPlayers = lineupOrder
     ? [...players].sort((a, b) => {
@@ -1448,6 +1457,7 @@ function GameStatsTable({ game, players, stats, updateLine, lineupOrder }) {
         const line = lineFor(stats, game.id, p.id);
         const d = derive(line);
         const battingNumber = lineupOrder ? lineupOrder.indexOf(p.id) : -1;
+        const runs = runsFor(p.id);
         return (
           <div key={p.id} className="rounded-lg p-3" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
@@ -1459,7 +1469,7 @@ function GameStatsTable({ game, players, stats, updateLine, lineupOrder }) {
                 <GenderPill gender={p.gender} />
               </div>
               <span className="text-xs font-mono text-stone-500">
-                {d.ab} AB · {d.h} H · OBP {fmt3(d.obp)} · SLG {fmt3(d.slg)} · {line.rbi || 0} RBI
+                {d.ab} AB · {d.h} H · OBP {fmt3(d.obp)} · SLG {fmt3(d.slg)} · {line.rbi || 0} RBI · {runs} R
               </span>
             </div>
 
@@ -1482,9 +1492,13 @@ function GameStatsTable({ game, players, stats, updateLine, lineupOrder }) {
               <Stepper label="RBI" value={line.rbi || 0} accent={COLORS.mustard}
                 onDec={() => bump(p.id, "rbi", -1, false)}
                 onInc={() => bump(p.id, "rbi", 1, false)} />
+              <Stepper label="R" value={runs} accent={COLORS.clay}
+                onDec={() => addManualRun(game, p.id, -1)}
+                onInc={() => addManualRun(game, p.id, 1)} />
             </div>
             <p className="text-[11px] text-stone-400 mt-2">
               Tap 1B / 2B / 3B / HR to log a hit, that adds one at-bat for you automatically. Use the AB stepper by itself to log an out. Bump RBI right after the play that drove the run in.
+              Use R for runs this player scored on their own (fast baserunning, an error, etc.) — it adds to the team score and to the inning's run total in the game log, tagged to whichever inning is currently set above.
             </p>
           </div>
         );
@@ -1975,6 +1989,7 @@ function DefenseView({ players, games, defenseLineups, setDefenseCell, generateD
               <style>{`
                 .print-defense-sheet { display: none; }
                 @media print {
+                  @page { size: landscape; }
                   body * { visibility: hidden; }
                   .print-defense-sheet, .print-defense-sheet * { visibility: visible; }
                   .print-defense-sheet {
@@ -2323,21 +2338,42 @@ function TeamWorkspace({
     const entry = log.find((e) => e.id === entryId);
     if (!entry) return;
 
-    // Reverse this play's effect on the player's aggregate stat line.
-    const current = lineFor(stats, game.id, entry.playerId);
-    const fieldByResult = { "1B": "s", "2B": "d", "3B": "t", HR: "hr" };
-    const patch = { ab: Math.max(0, (Number(current.ab) || 0) - 1) };
-    if (fieldByResult[entry.result]) {
-      const f = fieldByResult[entry.result];
-      patch[f] = Math.max(0, (Number(current[f]) || 0) - 1);
-    }
-    patch.rbi = Math.max(0, (Number(current.rbi) || 0) - (entry.rbi || 0));
-    updateLine(game.id, entry.playerId, { ...current, ...patch });
+    if (entry.result === "RUN") {
+      // A manually-recorded run scored, with no at-bat fields to reverse.
+      updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) });
+    } else {
+      // Reverse this play's effect on the player's aggregate stat line.
+      const current = lineFor(stats, game.id, entry.playerId);
+      const fieldByResult = { "1B": "s", "2B": "d", "3B": "t", HR: "hr" };
+      const patch = { ab: Math.max(0, (Number(current.ab) || 0) - 1) };
+      if (fieldByResult[entry.result]) {
+        const f = fieldByResult[entry.result];
+        patch[f] = Math.max(0, (Number(current[f]) || 0) - 1);
+      }
+      patch.rbi = Math.max(0, (Number(current.rbi) || 0) - (entry.rbi || 0));
+      updateLine(game.id, entry.playerId, { ...current, ...patch });
 
-    // Reverse this play's contribution to the team's live score.
-    if (entry.rbi) updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - entry.rbi) });
+      // Reverse this play's contribution to the team's live score.
+      if (entry.rbi) updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - entry.rbi) });
+    }
 
     setGameLogsState({ ...gameLogs, [game.id]: log.filter((e) => e.id !== entryId) });
+  };
+
+  const addManualRun = (game, playerId, delta) => {
+    const log = gameLogs[game.id] || [];
+    if (delta > 0) {
+      const entry = { id: uid("run"), inning: game.liveInning || 1, playerId, result: "RUN", rbi: 0 };
+      setGameLogsState({ ...gameLogs, [game.id]: [...log, entry] });
+      updateGameLive(game.id, { ourScore: (game.ourScore || 0) + 1 });
+    } else {
+      const idx = [...log].map((e, i) => ({ e, i })).filter(({ e }) => e.result === "RUN" && e.playerId === playerId).map(({ i }) => i).pop();
+      if (idx === undefined) return;
+      const next = [...log];
+      next.splice(idx, 1);
+      setGameLogsState({ ...gameLogs, [game.id]: next });
+      updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) });
+    }
   };
 
   const openPlayer = players.find((p) => p.id === openPlayerId);
@@ -2398,6 +2434,7 @@ function TeamWorkspace({
             logPlay={logPlay}
             adjustPlayRbi={adjustPlayRbi}
             deletePlay={deletePlay}
+            addManualRun={addManualRun}
             teamName={teamName}
           />
         )}
