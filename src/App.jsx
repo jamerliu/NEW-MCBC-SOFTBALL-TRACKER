@@ -1866,6 +1866,7 @@ function DefenseView({ players, games, defenseLineups, setDefenseCell, generateD
               {hasAssignments ? "Regenerate" : "Generate Defensive Lineup"}
             </Btn>
             {hasAssignments && <Btn variant="ghost" icon={X} onClick={() => clearDefenseLineup(gameId)}>Clear</Btn>}
+            {hasAssignments && <Btn variant="ghost" icon={Printer} onClick={() => window.print()}>Print Defensive Lineup</Btn>}
           </div>
 
           {hasAssignments && (
@@ -1967,6 +1968,60 @@ function DefenseView({ players, games, defenseLineups, setDefenseCell, generateD
                 )}
               </div>
             </div>
+          )}
+
+          {hasAssignments && (
+            <>
+              <style>{`
+                .print-defense-sheet { display: none; }
+                @media print {
+                  body * { visibility: hidden; }
+                  .print-defense-sheet, .print-defense-sheet * { visibility: visible; }
+                  .print-defense-sheet {
+                    display: block !important;
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    padding: 24px;
+                  }
+                }
+              `}</style>
+              <div className="print-defense-sheet">
+                <h1 style={{ fontSize: "20px", fontWeight: 800, marginBottom: "2px" }}>{teamName || "Defensive Lineup"}</h1>
+                <p style={{ fontSize: "13px", color: "#444", marginBottom: "16px" }}>
+                  {(() => {
+                    const g = games.find((x) => x.id === gameId);
+                    return g ? `${g.date}${g.opponent ? ` vs ${g.opponent}` : ""}` : "Defensive Positions";
+                  })()}
+                </p>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", borderBottom: "2px solid #222", padding: "4px 6px" }}>Position</th>
+                      {Array.from({ length: TOTAL_INNINGS }, (_, i) => i + 1).map((inning) => (
+                        <th key={inning} style={{ textAlign: "center", borderBottom: "2px solid #222", padding: "4px 6px" }}>{inning}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {DEFENSE_POSITIONS.map((pos) => (
+                      <tr key={pos}>
+                        <td style={{ padding: "4px 6px", borderBottom: "1px solid #ccc", fontWeight: 700 }}>{pos}</td>
+                        {Array.from({ length: TOTAL_INNINGS }, (_, i) => i + 1).map((inning) => {
+                          const playerId = assignments[defenseKey(pos, inning)];
+                          return (
+                            <td key={inning} style={{ padding: "4px 6px", borderBottom: "1px solid #ccc", textAlign: "center" }}>
+                              {playersById[playerId]?.name || ""}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </>
       )}
