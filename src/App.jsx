@@ -1567,7 +1567,7 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                                 {entry.result !== "RUN" && (
                                   <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
                                     {[1, 2, 3, 4].map((n) => (
-                                      <span key={n} style={{ width: "9px", height: "9px", display: "inline-block", border: "1px solid #333", background: (entry.finalBase || 0) >= n ? "#333" : "transparent" }} />
+                                      <span key={n} style={{ width: "9px", height: "9px", display: "inline-block", border: "1px solid #333", background: (entry.finalBase || 0) >= n ? "#333" : "transparent", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact" }} />
                                     ))}
                                     {entry.finalOut && <span style={{ marginLeft: "4px", fontWeight: 800 }}>OUT</span>}
                                   </span>
