@@ -1066,13 +1066,19 @@ function GamesListView({ games, trashedGames, lineups, onOpen, addGame, deleteGa
   );
 }
 
-function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, logPlay, adjustPlayRbi, deletePlay, addManualRun, teamName }) {
+function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, confirmAtBatAndResolve, adjustPlayRbi, deletePlay, addManualRun, teamName }) {
   const [pickerOpen, setPickerOpen] = useState((game.roster || []).length === 0);
   const [checked, setChecked] = useState(new Set(game.roster || []));
   const [showLog, setShowLog] = useState(true);
   const [pendingResult, setPendingResult] = useState(null);
   const [pendingRbi, setPendingRbi] = useState(0);
   const [noRbiSelected, setNoRbiSelected] = useState(false);
+  // Explicit drags made during the CURRENT, not-yet-confirmed at-bat. tokenKey -> "1B"|"2B"|"3B"|"HOME"|"OUT"|null.
+  // Anyone not in here yet just sits at whatever base game.baseState already has them on.
+  const [dragOverrides, setDragOverrides] = useState({});
+  const [basesConfirmed, setBasesConfirmed] = useState(false);
+  const [draggingKey, setDraggingKey] = useState(null);
+  const dragRef = useRef({ key: null });
 
   const rosterIds = game.roster || [];
   const rosterPlayers = players.filter((p) => rosterIds.includes(p.id));
@@ -1085,6 +1091,22 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
   const currentBatterId = battingOrder[liveBatterIdx];
   const currentBatter = currentBatterId ? playersById[currentBatterId] : null;
 
+  const existingRunnerBase = {}; // entryId -> "1B"|"2B"|"3B", from the persisted base state
+  const existingRunners = ["1B", "2B", "3B"]
+    .map((b) => {
+      const entryId = (game.baseState || {})[b];
+      if (!entryId) return null;
+      const entry = (gameLog || []).find((e) => e.id === entryId);
+      if (!entry) return null;
+      existingRunnerBase[entryId] = b;
+      return { tokenKey: entryId, playerId: entry.playerId };
+    })
+    .filter(Boolean);
+
+  // Where a token currently sits: an explicit drag this at-bat wins, otherwise their persisted
+  // base (for existing runners), otherwise unplaced (the batter, until dragged somewhere).
+  const posFor = (tokenKey) => (tokenKey in dragOverrides ? dragOverrides[tokenKey] : existingRunnerBase[tokenKey]);
+
   const togglePick = (id) => {
     setChecked((prev) => {
       const next = new Set(prev);
@@ -1093,7 +1115,10 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
     });
   };
 
-  const resetPending = () => { setPendingResult(null); setPendingRbi(0); setNoRbiSelected(false); };
+  const resetPending = () => {
+    setPendingResult(null); setPendingRbi(0); setNoRbiSelected(false);
+    setDragOverrides({}); setBasesConfirmed(false);
+  };
 
   const moveBatter = (dir) => {
     if (!battingOrder.length) return;
@@ -1103,14 +1128,36 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
   };
 
   const endInning = () => {
-    updateGameLive(game.id, { liveInning: liveInning + 1 });
+    updateGameLive(game.id, { liveInning: liveInning + 1, baseState: {} });
     resetPending();
   };
 
-  const canAdvance = pendingResult !== null && (pendingRbi > 0 || noRbiSelected);
+  const onTokenPointerDown = (e, key) => {
+    dragRef.current.key = key;
+    setDraggingKey(key);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onTokenPointerMove = (e) => {
+    if (!dragRef.current.key) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const zoneEl = el?.closest("[data-base-zone]");
+    if (!zoneEl) return;
+    const zone = zoneEl.getAttribute("data-base-zone");
+    const key = dragRef.current.key;
+    setDragOverrides((prev) => ({ ...prev, [key]: zone === "BATTERBOX" ? null : zone }));
+  };
+  const onTokenPointerUp = () => {
+    dragRef.current.key = null;
+    setDraggingKey(null);
+  };
+
+  const canAdvance = pendingResult !== null && (pendingRbi > 0 || noRbiSelected) && basesConfirmed;
   const confirmAtBat = () => {
     if (!currentBatterId || !canAdvance) return;
-    logPlay(game, currentBatterId, pendingResult, pendingRbi);
+    const moves = Object.entries(dragOverrides)
+      .filter(([, dest]) => !!dest)
+      .map(([key, dest]) => ({ entryId: key, destination: dest }));
+    confirmAtBatAndResolve(game, currentBatterId, pendingResult, pendingRbi, moves);
     resetPending();
   };
 
@@ -1293,6 +1340,98 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                   </button>
                 </div>
 
+                <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>
+                  3. Drag runners to where they ended up. Drag the current batter from their box onto a base if they reached one, or off to OUT if anyone's tagged. Up to 4 can end up at Home (everyone scores) or OUT.
+                </p>
+                <div
+                  className="relative rounded-lg mb-2"
+                  style={{ height: "230px", background: "white", border: `1px solid ${COLORS.line}` }}
+                  onPointerMove={onTokenPointerMove}
+                  onPointerUp={onTokenPointerUp}
+                >
+                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+                    <polygon points="50,12 82,50 50,80 18,50" fill="none" stroke={COLORS.line} strokeWidth="1.2" />
+                  </svg>
+
+                  {[
+                    { zone: "2B", label: "2B", style: { top: "4%", left: "50%", transform: "translate(-50%,0)" } },
+                    { zone: "1B", label: "1B", style: { top: "44%", left: "80%", transform: "translate(-50%,-50%)" } },
+                    { zone: "3B", label: "3B", style: { top: "44%", left: "20%", transform: "translate(-50%,-50%)" } },
+                    { zone: "HOME", label: "Home", style: { top: "84%", left: "38%", transform: "translate(-50%,-50%)" } },
+                  ].map(({ zone, label, style }) => (
+                    <div
+                      key={zone}
+                      data-base-zone={zone}
+                      className="absolute flex flex-col items-center gap-1 p-1.5 rounded-md"
+                      style={{ ...style, minWidth: "70px", minHeight: "44px", background: withAlpha(COLORS.field, 0.06), border: `1px dashed ${COLORS.line}` }}
+                    >
+                      <span className="text-[10px] font-bold uppercase" style={{ color: COLORS.muted }}>{label}</span>
+                      <div className="flex flex-wrap gap-1 justify-center">
+                        {[...existingRunners, ...(currentBatterId ? [{ tokenKey: "BATTER", playerId: currentBatterId }] : [])]
+                          .filter((t) => posFor(t.tokenKey) === zone)
+                          .map((t) => (
+                            <button
+                              key={t.tokenKey}
+                              onPointerDown={(e) => onTokenPointerDown(e, t.tokenKey)}
+                              className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
+                              style={{
+                                background: draggingKey === t.tokenKey ? COLORS.clay : COLORS.field,
+                                color: "white",
+                                boxShadow: draggingKey === t.tokenKey ? "0 3px 8px rgba(0,0,0,0.25)" : "none",
+                              }}
+                            >
+                              {playersById[t.playerId]?.name?.split(" ")[0] || "?"}
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div
+                    data-base-zone="BATTERBOX"
+                    className="absolute flex flex-col items-center gap-1 p-1.5 rounded-md"
+                    style={{ top: "84%", left: "78%", transform: "translate(-50%,-50%)", minWidth: "80px", minHeight: "44px", background: withAlpha(COLORS.mustard, 0.12), border: `1px dashed ${COLORS.mustard}` }}
+                  >
+                    <span className="text-[10px] font-bold uppercase" style={{ color: COLORS.muted }}>Current Batter</span>
+                    {currentBatterId && posFor("BATTER") == null && (
+                      <button
+                        onPointerDown={(e) => onTokenPointerDown(e, "BATTER")}
+                        className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
+                        style={{ background: draggingKey === "BATTER" ? COLORS.clay : COLORS.field, color: "white" }}
+                      >
+                        {currentBatter?.name?.split(" ")[0] || "?"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div
+                  data-base-zone="OUT"
+                  className="flex flex-wrap items-center gap-2 p-2 rounded-md mb-2"
+                  style={{ background: withAlpha("#9B3A1F", 0.08), border: `1px dashed #9B3A1F`, minHeight: "38px" }}
+                  onPointerMove={onTokenPointerMove}
+                  onPointerUp={onTokenPointerUp}
+                >
+                  <span className="text-[10px] font-bold uppercase" style={{ color: "#9B3A1F" }}>Out (drag here if tagged)</span>
+                  {[...existingRunners, ...(currentBatterId ? [{ tokenKey: "BATTER", playerId: currentBatterId }] : [])]
+                    .filter((t) => posFor(t.tokenKey) === "OUT")
+                    .map((t) => (
+                      <button
+                        key={t.tokenKey}
+                        onPointerDown={(e) => onTokenPointerDown(e, t.tokenKey)}
+                        className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
+                        style={{ background: "#9B3A1F", color: "white" }}
+                      >
+                        {playersById[t.playerId]?.name?.split(" ")[0] || "?"}
+                      </button>
+                    ))}
+                </div>
+
+                <label className="flex items-center gap-2 mb-3 text-xs font-bold" style={{ color: COLORS.muted }}>
+                  <input type="checkbox" checked={basesConfirmed} onChange={(e) => setBasesConfirmed(e.target.checked)} />
+                  I've finished moving everyone for this play
+                </label>
+
                 <div className="flex flex-wrap gap-2">
                   <button
                     onClick={confirmAtBat}
@@ -1358,6 +1497,14 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                                 {resultLabel[entry.result]}
                               </span>
                               {entry.result !== "RUN" && (
+                                <span className="flex items-center gap-1">
+                                  {[1, 2, 3, 4].map((n) => (
+                                    <span key={n} className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: (entry.finalBase || 0) >= n ? COLORS.field : "transparent", border: `1px solid ${COLORS.field}` }} />
+                                  ))}
+                                  {entry.finalOut && <span className="text-[10px] font-extrabold ml-0.5" style={{ color: "#9B3A1F" }}>OUT</span>}
+                                </span>
+                              )}
+                              {entry.result !== "RUN" && (
                                 <span className="flex items-center gap-1 text-xs" style={{ color: COLORS.muted }}>
                                   RBI
                                   <button onClick={() => adjustPlayRbi(game, entry.id, -1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Minus size={11} /></button>
@@ -1416,6 +1563,16 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                             <tr key={entry.id}>
                               <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{p?.name || "—"}</td>
                               <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{resultLabel[entry.result]}</td>
+                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>
+                                {entry.result !== "RUN" && (
+                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                    {[1, 2, 3, 4].map((n) => (
+                                      <span key={n} style={{ width: "9px", height: "9px", display: "inline-block", border: "1px solid #333", background: (entry.finalBase || 0) >= n ? "#333" : "transparent" }} />
+                                    ))}
+                                    {entry.finalOut && <span style={{ marginLeft: "4px", fontWeight: 800 }}>OUT</span>}
+                                  </span>
+                                )}
+                              </td>
                               <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{entry.result !== "RUN" && entry.rbi ? `${entry.rbi} RBI` : ""}</td>
                             </tr>
                           );
@@ -1441,7 +1598,7 @@ function GameStatsTable({ game, players, stats, updateLine, lineupOrder, gameLog
     updateLine(game.id, playerId, { ...current, ...patch });
   };
 
-  const runsFor = (playerId) => (gameLog || []).filter((e) => e.result === "RUN" && e.playerId === playerId).length;
+  const runsFor = (playerId) => (gameLog || []).filter((e) => e.playerId === playerId && (e.result === "RUN" || e.finalBase === 4)).length;
 
   const orderedPlayers = lineupOrder
     ? [...players].sort((a, b) => {
@@ -2288,8 +2445,15 @@ function TeamWorkspace({
     return game.roster || [];
   };
 
-  const logPlay = (game, playerId, result, rbi = 0) => {
-    // Update the player's aggregate game stat line, same effect as the steppers.
+  const RESULT_BASE = { OUT: 0, "1B": 1, "2B": 2, "3B": 3, HR: 4 };
+
+  // Does everything for a confirmed at-bat in one pass: creates the play's log entry, applies
+  // any base-running moves (existing runners and/or this batter, using the "BATTER" sentinel for
+  // the latter since their entry doesn't exist yet), advances the batter, and updates the score.
+  // This used to be two separate functions each saving their own snapshot of state, which meant
+  // whichever ran second silently overwrote whatever the first one had just changed. Doing it as
+  // one function with one gameLog write and one game write avoids that entirely.
+  const confirmAtBatAndResolve = (game, playerId, result, rbi, moves) => {
     const current = lineFor(stats, game.id, playerId);
     const fieldByResult = { "1B": "s", "2B": "d", "3B": "t", HR: "hr" };
     const patch = { ab: (Number(current.ab) || 0) + 1 };
@@ -2300,21 +2464,53 @@ function TeamWorkspace({
     if (rbi) patch.rbi = (Number(current.rbi) || 0) + rbi;
     updateLine(game.id, playerId, { ...current, ...patch });
 
-    // Append to the play-by-play log for the inning-by-inning report.
-    const inning = game.liveInning || 1;
-    const entry = { id: uid("play"), inning, playerId, result, rbi };
-    const nextLog = { ...gameLogs, [game.id]: [...(gameLogs[game.id] || []), entry] };
-    setGameLogsState(nextLog);
+    const newEntryId = uid("play");
+    let newEntry = {
+      id: newEntryId,
+      inning: game.liveInning || 1,
+      playerId,
+      result,
+      rbi,
+      finalBase: RESULT_BASE[result] ?? 0,
+      finalOut: result === "OUT",
+    };
 
-    // Advance whose turn it is, and credit the team's score for any RBIs, in one update.
+    let scoreDelta = 0;
+    const nextBaseState = { ...(game.baseState || {}) };
+    const patchesById = {};
+    (moves || []).forEach(({ entryId, destination }) => {
+      if (!destination) return;
+      const realId = entryId === "BATTER" ? newEntryId : entryId;
+      ["1B", "2B", "3B"].forEach((b) => { if (nextBaseState[b] === realId) nextBaseState[b] = null; });
+      if (destination === "HOME") {
+        scoreDelta += 1;
+        patchesById[realId] = { finalBase: 4, finalOut: false };
+      } else if (destination === "OUT") {
+        patchesById[realId] = { finalOut: true };
+      } else {
+        nextBaseState[destination] = realId;
+        const baseNum = destination === "1B" ? 1 : destination === "2B" ? 2 : 3;
+        patchesById[realId] = { finalBase: baseNum };
+      }
+    });
+    if (patchesById[newEntryId]) newEntry = { ...newEntry, ...patchesById[newEntryId] };
+
+    const log = gameLogs[game.id] || [];
+    const nextLog = [
+      ...log.map((e) => (patchesById[e.id] ? { ...e, ...patchesById[e.id] } : e)),
+      newEntry,
+    ];
+    setGameLogsState({ ...gameLogs, [game.id]: nextLog });
+
     const order = battingOrderFor(game);
-    const livePatch = {};
+    const livePatch = { baseState: nextBaseState, ourScore: Math.max(0, (game.ourScore || 0) + scoreDelta) };
     if (order.length > 0) {
       const curIdx = game.liveBatterIdx || 0;
       livePatch.liveBatterIdx = (curIdx + 1) % order.length;
     }
-    if (rbi) livePatch.ourScore = Math.max(0, (game.ourScore || 0) + rbi);
-    if (Object.keys(livePatch).length) updateGameLive(game.id, livePatch);
+    updateGameLive(game.id, livePatch);
+
+    return newEntry;
   };
 
   const adjustPlayRbi = (game, entryId, delta) => {
@@ -2326,11 +2522,11 @@ function TeamWorkspace({
     const nextLog = log.map((e) => (e.id === entryId ? { ...e, rbi: newRbi } : e));
     setGameLogsState({ ...gameLogs, [game.id]: nextLog });
 
-    // Keep the player's aggregate RBI total, and the team's live score, in sync with this specific play.
+    // RBI no longer drives the score (the base-running diagram does), but it still
+    // counts toward the player's season RBI total.
     const current = lineFor(stats, game.id, entry.playerId);
     const nextPlayerRbi = Math.max(0, (Number(current.rbi) || 0) + appliedDelta);
     updateLine(game.id, entry.playerId, { ...current, rbi: nextPlayerRbi });
-    updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) + appliedDelta) });
   };
 
   const deletePlay = (game, entryId) => {
@@ -2353,8 +2549,15 @@ function TeamWorkspace({
       patch.rbi = Math.max(0, (Number(current.rbi) || 0) - (entry.rbi || 0));
       updateLine(game.id, entry.playerId, { ...current, ...patch });
 
-      // Reverse this play's contribution to the team's live score.
-      if (entry.rbi) updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - entry.rbi) });
+      // If this play had them crossing home, reverse that contribution to the score.
+      if (entry.finalBase === 4) {
+        updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) });
+      }
+      // Clear them off the bases if they were still sitting on one.
+      const baseState = { ...(game.baseState || {}) };
+      let baseChanged = false;
+      ["1B", "2B", "3B"].forEach((b) => { if (baseState[b] === entryId) { baseState[b] = null; baseChanged = true; } });
+      if (baseChanged) updateGameLive(game.id, { baseState });
     }
 
     setGameLogsState({ ...gameLogs, [game.id]: log.filter((e) => e.id !== entryId) });
@@ -2431,7 +2634,7 @@ function TeamWorkspace({
             setRoster={setRoster}
             updateLine={updateLine}
             updateGameLive={updateGameLive}
-            logPlay={logPlay}
+            confirmAtBatAndResolve={confirmAtBatAndResolve}
             adjustPlayRbi={adjustPlayRbi}
             deletePlay={deletePlay}
             addManualRun={addManualRun}
