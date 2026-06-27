@@ -1673,10 +1673,11 @@ function GameStatsTable({ game, players, stats, updateLine, lineupOrder, gameLog
    LINEUP BUILDER
 --------------------------------------------------------------------------- */
 
-function LineupView({ players, games, stats, historical, lineups, saveLineup, teamName }) {
+function LineupView({ players, games, stats, historical, lineups, saveLineup, setRoster, teamName }) {
   const [gameId, setGameId] = useState("");
   const [checked, setChecked] = useState(new Set());
   const [order, setOrder] = useState(null);
+  const [addPlayerId, setAddPlayerId] = useState("");
 
   const sortedGames = [...games].sort((a, b) => (a.date < b.date ? 1 : -1));
   const playersById = useMemo(() => Object.fromEntries(players.map((p) => [p.id, p])), [players]);
@@ -1702,6 +1703,19 @@ function LineupView({ players, games, stats, historical, lineups, saveLineup, te
     const cumById = {};
     selected.forEach((id) => { cumById[id] = cumulativeFor(id, stats, historical); });
     setOrder(buildLineup(selected, playersById, cumById));
+  };
+
+  const addPlayerToLineup = () => {
+    if (!addPlayerId || !order || order.includes(addPlayerId)) return;
+    setOrder((cur) => [...cur, addPlayerId]);
+    setChecked((prev) => new Set([...prev, addPlayerId]));
+    if (gameId) {
+      const g = games.find((x) => x.id === gameId);
+      const nextRoster = new Set(g?.roster || []);
+      nextRoster.add(addPlayerId);
+      setRoster(gameId, Array.from(nextRoster));
+    }
+    setAddPlayerId("");
   };
 
   const move = (idx, dir) => {
@@ -1798,7 +1812,25 @@ function LineupView({ players, games, stats, historical, lineups, saveLineup, te
               </span>
             </div>
           </div>
-          <p className="text-xs mb-2" style={{ color: COLORS.muted }}>Drag the grip handle to reorder, or use the arrows.</p>
+
+          <div className="flex flex-wrap items-end gap-2 mb-3 p-2 rounded-md" style={{ background: "#F5F3FC", border: `1px dashed ${COLORS.line}` }}>
+            <div>
+              <label className="text-xs font-bold uppercase block mb-1" style={{ color: COLORS.field }}>Add a player to this lineup</label>
+              <select
+                value={addPlayerId}
+                onChange={(e) => setAddPlayerId(e.target.value)}
+                className="rounded-md border px-2 py-1.5 text-sm"
+                style={{ borderColor: COLORS.line }}
+              >
+                <option value="">— choose a player —</option>
+                {players.filter((p) => !order.includes(p.id)).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <Btn variant="ghost" small icon={Plus} onClick={addPlayerToLineup} disabled={!addPlayerId}>Add to lineup</Btn>
+          </div>
+          <p className="text-xs mb-2" style={{ color: COLORS.muted }}>Drag the grip handle to reorder, or use the arrows. A player added here also joins this game's roster, so they'll show up in the Defense tab too (starting at 0 innings, flagged until they're placed).</p>
           <ol className="grid gap-1.5">
             {order.map((id, idx) => {
               const p = playersById[id];
@@ -2643,7 +2675,7 @@ function TeamWorkspace({
         )}
 
         {tab === "lineup" && (
-          <LineupView players={players} games={games} stats={stats} historical={historical} lineups={lineups} saveLineup={saveLineup} teamName={teamName} />
+          <LineupView players={players} games={games} stats={stats} historical={historical} lineups={lineups} saveLineup={saveLineup} setRoster={setRoster} teamName={teamName} />
         )}
 
         {tab === "history" && (
