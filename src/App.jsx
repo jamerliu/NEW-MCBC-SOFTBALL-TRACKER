@@ -1066,35 +1066,30 @@ function GamesListView({ games, trashedGames, lineups, onOpen, addGame, deleteGa
   );
 }
 
-function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, confirmAtBatAndResolve, adjustPlayRbi, deletePlay, addManualRun, teamName }) {
-  const [pickerOpen, setPickerOpen] = useState((game.roster || []).length === 0);
-  const [checked, setChecked] = useState(new Set(game.roster || []));
-  const [showLog, setShowLog] = useState(true);
+/* ---------------------------------------------------------------------------
+   AT-BAT TRACKER (one instance per team: "us" or "opp")
+--------------------------------------------------------------------------- */
+
+function AtBatTrackerSection({ game, team, battingOrder, playersById, gameLog, showGender, confirmAtBatAndResolve, updateGameLive, endHalfInning }) {
   const [pendingResult, setPendingResult] = useState(null);
   const [pendingRbi, setPendingRbi] = useState(0);
   const [noRbiSelected, setNoRbiSelected] = useState(false);
-  // Explicit drags made during the CURRENT, not-yet-confirmed at-bat. tokenKey -> "1B"|"2B"|"3B"|"HOME"|"OUT"|null.
-  // Anyone not in here yet just sits at whatever base game.baseState already has them on.
   const [dragOverrides, setDragOverrides] = useState({});
   const [basesConfirmed, setBasesConfirmed] = useState(false);
   const [draggingKey, setDraggingKey] = useState(null);
   const dragRef = useRef({ key: null });
 
-  const rosterIds = game.roster || [];
-  const rosterPlayers = players.filter((p) => rosterIds.includes(p.id));
-  const lineupOrder = lineups[game.id] || null;
-  const playersById = useMemo(() => Object.fromEntries(players.map((p) => [p.id, p])), [players]);
+  const batterIdxField = team === "opp" ? "oppBatterIdx" : "liveBatterIdx";
+  const baseStateField = team === "opp" ? "oppBaseState" : "baseState";
 
-  const battingOrder = lineupOrder && lineupOrder.length ? lineupOrder : rosterIds;
-  const liveInning = game.liveInning || 1;
-  const liveBatterIdx = battingOrder.length ? (game.liveBatterIdx || 0) % battingOrder.length : 0;
+  const liveBatterIdx = battingOrder.length ? (game[batterIdxField] || 0) % battingOrder.length : 0;
   const currentBatterId = battingOrder[liveBatterIdx];
   const currentBatter = currentBatterId ? playersById[currentBatterId] : null;
 
-  const existingRunnerBase = {}; // entryId -> "1B"|"2B"|"3B", from the persisted base state
+  const existingRunnerBase = {};
   const existingRunners = ["1B", "2B", "3B"]
     .map((b) => {
-      const entryId = (game.baseState || {})[b];
+      const entryId = (game[baseStateField] || {})[b];
       if (!entryId) return null;
       const entry = (gameLog || []).find((e) => e.id === entryId);
       if (!entry) return null;
@@ -1103,17 +1098,7 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
     })
     .filter(Boolean);
 
-  // Where a token currently sits: an explicit drag this at-bat wins, otherwise their persisted
-  // base (for existing runners), otherwise unplaced (the batter, until dragged somewhere).
   const posFor = (tokenKey) => (tokenKey in dragOverrides ? dragOverrides[tokenKey] : existingRunnerBase[tokenKey]);
-
-  const togglePick = (id) => {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
 
   const resetPending = () => {
     setPendingResult(null); setPendingRbi(0); setNoRbiSelected(false);
@@ -1123,12 +1108,7 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
   const moveBatter = (dir) => {
     if (!battingOrder.length) return;
     const next = (liveBatterIdx + dir + battingOrder.length) % battingOrder.length;
-    updateGameLive(game.id, { liveBatterIdx: next });
-    resetPending();
-  };
-
-  const endInning = () => {
-    updateGameLive(game.id, { liveInning: liveInning + 1, baseState: {} });
+    updateGameLive(game.id, { [batterIdxField]: next });
     resetPending();
   };
 
@@ -1157,19 +1137,257 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
     const moves = Object.entries(dragOverrides)
       .filter(([, dest]) => !!dest)
       .map(([key, dest]) => ({ entryId: key, destination: dest }));
-    confirmAtBatAndResolve(game, currentBatterId, pendingResult, pendingRbi, moves);
+    confirmAtBatAndResolve(game, team, currentBatterId, pendingResult, pendingRbi, moves, battingOrder.length);
     resetPending();
   };
 
-  const logsByInning = {};
+  const resultLabel = { OUT: "Out", "1B": "Single", "2B": "Double", "3B": "Triple", HR: "Home Run" };
+  const resultColor = { OUT: COLORS.ink, "1B": COLORS.turf, "2B": COLORS.turf, "3B": COLORS.turf, HR: COLORS.clay };
+
+  if (battingOrder.length === 0) {
+    return (
+      <p className="text-sm" style={{ color: COLORS.muted }}>
+        {team === "opp" ? "Enter the opponent's batting order above to start tracking their at-bats." : "Confirm a roster (or save a lineup for this game) to start tracking at-bats."}
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-3 mb-3 p-2 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+        <button onClick={() => moveBatter(-1)} className="text-stone-400 hover:text-stone-700"><ChevronLeft size={18} /></button>
+        <span className="font-mono font-extrabold w-6 text-center" style={{ color: COLORS.clay }}>{liveBatterIdx + 1}</span>
+        <span className="flex-1 font-bold" style={{ color: COLORS.ink }}>{currentBatter?.name || "—"}</span>
+        {showGender && currentBatter && <GenderPill gender={currentBatter.gender} />}
+        <button onClick={() => moveBatter(1)} className="text-stone-400 hover:text-stone-700"><ChevronRight size={18} /></button>
+      </div>
+
+      <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>1. Tap how this at-bat ended. Tap a different result to correct it, it won't double count.</p>
+      <div className="flex flex-wrap gap-2 mb-3">
+        {["OUT", "1B", "2B", "3B", "HR"].map((r) => {
+          const solid = resultColor[r];
+          const selected = pendingResult === r;
+          return (
+            <button
+              key={r}
+              onClick={() => setPendingResult(r)}
+              className="px-3 py-2 rounded-md text-sm font-bold transition-colors"
+              style={{
+                background: selected ? solid : withAlpha(solid, 0.12),
+                color: selected ? "white" : solid,
+                border: `1.5px solid ${selected ? solid : withAlpha(solid, 0.35)}`,
+              }}
+            >
+              {resultLabel[r]}
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>2. Add any RBIs from this at-bat, or confirm there weren't any.</p>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <button
+          onClick={() => setPendingRbi((v) => Math.max(0, v - 1))}
+          className="w-7 h-7 rounded-md flex items-center justify-center"
+          style={{ background: "white", border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
+        >
+          <Minus size={14} />
+        </button>
+        <span className="w-6 text-center font-mono font-extrabold tabular-nums" style={{ color: COLORS.ink }}>{pendingRbi}</span>
+        <button
+          onClick={() => { setPendingRbi((v) => v + 1); setNoRbiSelected(false); }}
+          className="w-7 h-7 rounded-md flex items-center justify-center"
+          style={{ background: COLORS.mustard, color: "white" }}
+        >
+          <Plus size={14} />
+        </button>
+        <span className="text-xs font-bold uppercase tracking-wide mx-1" style={{ color: COLORS.muted }}>RBI</span>
+        <button
+          onClick={() => { setNoRbiSelected(true); setPendingRbi(0); }}
+          className="px-3 py-1.5 rounded-md text-sm font-bold"
+          style={{
+            background: noRbiSelected ? COLORS.field : withAlpha(COLORS.field, 0.1),
+            color: noRbiSelected ? "white" : COLORS.field,
+            border: `1.5px solid ${noRbiSelected ? COLORS.field : withAlpha(COLORS.field, 0.3)}`,
+          }}
+        >
+          No RBIs
+        </button>
+      </div>
+
+      <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>
+        3. Drag runners to where they ended up. Drag the current batter from their box onto a base if they reached one, or off to OUT if anyone's tagged. Up to 4 can end up at Home (everyone scores) or OUT.
+      </p>
+      <div
+        className="relative rounded-lg mb-2"
+        style={{ height: "230px", background: "white", border: `1px solid ${COLORS.line}` }}
+        onPointerMove={onTokenPointerMove}
+        onPointerUp={onTokenPointerUp}
+      >
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+          <polygon points="50,12 82,50 50,80 18,50" fill="none" stroke={COLORS.line} strokeWidth="1.2" />
+        </svg>
+
+        {[
+          { zone: "2B", label: "2B", style: { top: "4%", left: "50%", transform: "translate(-50%,0)" } },
+          { zone: "1B", label: "1B", style: { top: "44%", left: "80%", transform: "translate(-50%,-50%)" } },
+          { zone: "3B", label: "3B", style: { top: "44%", left: "20%", transform: "translate(-50%,-50%)" } },
+          { zone: "HOME", label: "Home", style: { top: "84%", left: "38%", transform: "translate(-50%,-50%)" } },
+        ].map(({ zone, label, style }) => (
+          <div
+            key={zone}
+            data-base-zone={zone}
+            className="absolute flex flex-col items-center gap-1 p-1.5 rounded-md"
+            style={{ ...style, minWidth: "70px", minHeight: "44px", background: withAlpha(COLORS.field, 0.06), border: `1px dashed ${COLORS.line}` }}
+          >
+            <span className="text-[10px] font-bold uppercase" style={{ color: COLORS.muted }}>{label}</span>
+            <div className="flex flex-wrap gap-1 justify-center">
+              {[...existingRunners, ...(currentBatterId ? [{ tokenKey: "BATTER", playerId: currentBatterId }] : [])]
+                .filter((t) => posFor(t.tokenKey) === zone)
+                .map((t) => (
+                  <button
+                    key={t.tokenKey}
+                    onPointerDown={(e) => onTokenPointerDown(e, t.tokenKey)}
+                    className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
+                    style={{
+                      background: draggingKey === t.tokenKey ? COLORS.clay : COLORS.field,
+                      color: "white",
+                      boxShadow: draggingKey === t.tokenKey ? "0 3px 8px rgba(0,0,0,0.25)" : "none",
+                    }}
+                  >
+                    {playersById[t.playerId]?.name?.split(" ")[0] || "?"}
+                  </button>
+                ))}
+            </div>
+          </div>
+        ))}
+
+        <div
+          data-base-zone="BATTERBOX"
+          className="absolute flex flex-col items-center gap-1 p-1.5 rounded-md"
+          style={{ top: "84%", left: "78%", transform: "translate(-50%,-50%)", minWidth: "80px", minHeight: "44px", background: withAlpha(COLORS.mustard, 0.12), border: `1px dashed ${COLORS.mustard}` }}
+        >
+          <span className="text-[10px] font-bold uppercase" style={{ color: COLORS.muted }}>Current Batter</span>
+          {currentBatterId && posFor("BATTER") == null && (
+            <button
+              onPointerDown={(e) => onTokenPointerDown(e, "BATTER")}
+              className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
+              style={{ background: draggingKey === "BATTER" ? COLORS.clay : COLORS.field, color: "white" }}
+            >
+              {currentBatter?.name?.split(" ")[0] || "?"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div
+        data-base-zone="OUT"
+        className="flex flex-wrap items-center gap-2 p-2 rounded-md mb-2"
+        style={{ background: withAlpha("#9B3A1F", 0.08), border: `1px dashed #9B3A1F`, minHeight: "38px" }}
+        onPointerMove={onTokenPointerMove}
+        onPointerUp={onTokenPointerUp}
+      >
+        <span className="text-[10px] font-bold uppercase" style={{ color: "#9B3A1F" }}>Out (drag here if tagged)</span>
+        {[...existingRunners, ...(currentBatterId ? [{ tokenKey: "BATTER", playerId: currentBatterId }] : [])]
+          .filter((t) => posFor(t.tokenKey) === "OUT")
+          .map((t) => (
+            <button
+              key={t.tokenKey}
+              onPointerDown={(e) => onTokenPointerDown(e, t.tokenKey)}
+              className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
+              style={{ background: "#9B3A1F", color: "white" }}
+            >
+              {playersById[t.playerId]?.name?.split(" ")[0] || "?"}
+            </button>
+          ))}
+      </div>
+
+      <label className="flex items-center gap-2 mb-3 text-xs font-bold" style={{ color: COLORS.muted }}>
+        <input type="checkbox" checked={basesConfirmed} onChange={(e) => setBasesConfirmed(e.target.checked)} />
+        I've finished moving everyone for this play
+      </label>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={confirmAtBat}
+          disabled={!canAdvance}
+          className="px-4 py-2.5 rounded-md text-sm font-extrabold flex items-center gap-1.5"
+          style={{
+            background: canAdvance ? COLORS.field : "#DAD3F0",
+            color: canAdvance ? "white" : "#A79FC9",
+            cursor: canAdvance ? "pointer" : "not-allowed",
+          }}
+        >
+          Next Batter <ChevronRight size={16} />
+        </button>
+        <Btn variant="ghost" icon={ChevronRight} onClick={() => endHalfInning(game)}>End Inning</Btn>
+      </div>
+    </>
+  );
+}
+
+function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRoster, updateLine, updateGameLive, confirmAtBatAndResolve, adjustPlayRbi, deletePlay, addManualRun, setOppLineup, setBattingFirst, setActiveTrackerTeam, endHalfInning, prevHalfInning, teamName }) {
+  const [pickerOpen, setPickerOpen] = useState((game.roster || []).length === 0);
+  const [checked, setChecked] = useState(new Set(game.roster || []));
+  const [showLog, setShowLog] = useState(true);
+  const [oppNameDraft, setOppNameDraft] = useState("");
+
+  const rosterIds = game.roster || [];
+  const rosterPlayers = players.filter((p) => rosterIds.includes(p.id));
+  const lineupOrder = lineups[game.id] || null;
+  const playersById = useMemo(() => Object.fromEntries(players.map((p) => [p.id, p])), [players]);
+  const battingOrder = lineupOrder && lineupOrder.length ? lineupOrder : rosterIds;
+
+  const oppLineup = game.oppLineup || [];
+  const oppPlayersById = useMemo(() => Object.fromEntries(oppLineup.map((p) => [p.id, p])), [oppLineup]);
+  const oppBattingOrder = oppLineup.map((p) => p.id);
+
+  const liveInning = game.liveInning || 1;
+  const inningHalf = game.inningHalf || "top";
+  const battingFirst = game.battingFirst;
+  const activeTeam = game.activeTrackerTeam || battingFirst || "us";
+
+  const togglePick = (id) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const addOppPlayer = () => {
+    const name = oppNameDraft.trim();
+    if (!name) return;
+    setOppLineup(game.id, [...oppLineup, { id: uid("opp"), name }]);
+    setOppNameDraft("");
+  };
+  const removeOppPlayer = (id) => setOppLineup(game.id, oppLineup.filter((p) => p.id !== id));
+  const moveOppPlayer = (idx, dir) => {
+    const next = [...oppLineup];
+    const j = idx + dir;
+    if (j < 0 || j >= next.length) return;
+    [next[idx], next[j]] = [next[j], next[idx]];
+    setOppLineup(game.id, next);
+  };
+
+  const teamForHalf = (half) => (half === "top" ? (battingFirst || "us") : (battingFirst === "us" ? "opp" : "us"));
+  const teamLabelFor = (team) => (team === "opp" ? (game.opponent || "Opponent") : (teamName || "Us"));
+
+  const logsByKey = {};
   (gameLog || []).forEach((entry) => {
-    (logsByInning[entry.inning] = logsByInning[entry.inning] || []).push(entry);
+    const half = entry.half || "top";
+    const key = `${entry.inning}-${half}`;
+    (logsByKey[key] = logsByKey[key] || []).push(entry);
   });
-  const inningsInOrder = Object.keys(logsByInning).map(Number).sort((a, b) => a - b);
+  const keysInOrder = Object.keys(logsByKey).sort((a, b) => {
+    const [aInn, aHalf] = a.split("-");
+    const [bInn, bHalf] = b.split("-");
+    if (Number(aInn) !== Number(bInn)) return Number(aInn) - Number(bInn);
+    return aHalf === "top" ? -1 : 1;
+  });
 
   const resultLabel = { OUT: "Out", "1B": "Single", "2B": "Double", "3B": "Triple", HR: "Home Run", RUN: "Run scored" };
-  const inningRuns = (inning) => (logsByInning[inning] || []).reduce((sum, e) => sum + (e.result === "RUN" ? 1 : (e.rbi || 0)), 0);
-  const resultColor = { OUT: COLORS.ink, "1B": COLORS.turf, "2B": COLORS.turf, "3B": COLORS.turf, HR: COLORS.clay };
+  const inningRuns = (entries) => entries.reduce((sum, e) => sum + (e.result === "RUN" ? 1 : (e.rbi || 0)), 0);
 
   return (
     <div>
@@ -1222,7 +1440,7 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
         </div>
       </div>
       <p className="text-[11px] mb-3 text-center" style={{ color: COLORS.muted }}>
-        Your score updates automatically as RBIs are logged below. Use the +/- to correct it, or for runs that score without an RBI (errors, etc). The opponent's score is always manual.
+        Both scores update automatically as runners cross home in either team's diagram below. The +/- here are for manual corrections.
       </p>
 
       {pickerOpen ? (
@@ -1241,213 +1459,103 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
         </div>
       ) : (
         <>
-          {/* LIVE AT-BAT TRACKER */}
-          <div className="rounded-lg p-4 mb-5" style={{ background: "#EFF1FE", border: `2px solid ${COLORS.mustard}` }}>
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <h3 className="font-extrabold uppercase tracking-wide text-sm" style={{ color: COLORS.field }}>Live At-Bat Tracker</h3>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wide mr-1" style={{ color: COLORS.field }}>Inning</span>
-                <button
-                  onClick={() => updateGameLive(game.id, { liveInning: Math.max(1, liveInning - 1) })}
-                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
-                  style={{ background: COLORS.field, color: "white" }}
-                >
-                  <ChevronLeft size={18} />
-                </button>
-                <div className="flex items-end gap-2 px-1" style={{ minWidth: "92px", justifyContent: "center" }}>
-                  <span className="font-mono font-bold" style={{ fontSize: "1.1rem", opacity: 0.3, color: COLORS.ink }}>
-                    {liveInning > 1 ? liveInning - 1 : ""}
-                  </span>
-                  <span className="font-mono font-extrabold" style={{ fontSize: "2.5rem", lineHeight: 1, color: COLORS.field }}>
-                    {liveInning}
-                  </span>
-                  <span className="font-mono font-bold" style={{ fontSize: "1.1rem", opacity: 0.3, color: COLORS.ink }}>
-                    {liveInning + 1}
-                  </span>
-                </div>
-                <button
-                  onClick={() => updateGameLive(game.id, { liveInning: liveInning + 1 })}
-                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
-                  style={{ background: COLORS.field, color: "white" }}
-                >
-                  <ChevronRight size={18} />
-                </button>
-              </div>
+          {/* GAME SETUP: who bats first, opponent's batting order */}
+          <div className="rounded-lg p-3 mb-4" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+            <h3 className="text-sm font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.field }}>Game Setup</h3>
+            <p className="text-xs font-bold uppercase mb-1" style={{ color: COLORS.muted }}>Who bats first?</p>
+            <div className="flex gap-2 mb-3">
+              <Btn variant={battingFirst === "us" ? "primary" : "ghost"} small onClick={() => setBattingFirst(game.id, "us")}>{teamName || "Us"} bat first</Btn>
+              <Btn variant={battingFirst === "opp" ? "primary" : "ghost"} small onClick={() => setBattingFirst(game.id, "opp")}>{game.opponent || "Opponent"} bat first</Btn>
             </div>
 
-            {battingOrder.length === 0 ? (
-              <p className="text-sm" style={{ color: COLORS.muted }}>Confirm a roster (or save a lineup for this game) to start tracking at-bats.</p>
+            <p className="text-xs font-bold uppercase mb-1" style={{ color: COLORS.muted }}>{game.opponent || "Opponent"}'s batting order</p>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {oppLineup.map((p, idx) => (
+                <span key={p.id} className="flex items-center gap-1 pl-2 pr-1 py-1 rounded-full text-xs font-bold" style={{ background: COLORS.field, color: "white" }}>
+                  {idx + 1}. {p.name}
+                  <button onClick={() => moveOppPlayer(idx, -1)} disabled={idx === 0} className="disabled:opacity-30"><ArrowUp size={11} /></button>
+                  <button onClick={() => moveOppPlayer(idx, 1)} disabled={idx === oppLineup.length - 1} className="disabled:opacity-30"><ArrowDown size={11} /></button>
+                  <button onClick={() => removeOppPlayer(p.id)}><X size={11} /></button>
+                </span>
+              ))}
+              {oppLineup.length === 0 && <span className="text-xs text-stone-400">No opponent players entered yet.</span>}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={oppNameDraft}
+                onChange={(e) => setOppNameDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addOppPlayer(); }}
+                placeholder="Opponent player name"
+                className="rounded-md border px-2 py-1.5 text-sm"
+                style={{ borderColor: COLORS.line }}
+              />
+              <Btn small icon={Plus} onClick={addOppPlayer}>Add</Btn>
+            </div>
+          </div>
+
+          {/* SHARED TOP/BOTTOM INNING HEADER */}
+          <div className="flex items-center justify-center gap-4 rounded-lg p-3 mb-3" style={{ background: COLORS.field }}>
+            <button
+              onClick={() => prevHalfInning(game)}
+              className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+              style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+              title="Previous half-inning"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <div className="text-center">
+              <div className="font-mono font-extrabold text-white" style={{ fontSize: "1.7rem", lineHeight: 1 }}>
+                {inningHalf === "top" ? "Top" : "Bottom"} {liveInning}
+              </div>
+              <div className="text-xs font-bold uppercase tracking-wide" style={{ color: "rgba(245,243,252,0.7)" }}>
+                {teamLabelFor(teamForHalf(inningHalf))} batting
+              </div>
+            </div>
+            <button
+              onClick={() => endHalfInning(game)}
+              className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+              style={{ background: "rgba(255,255,255,0.15)", color: "white" }}
+              title="Next half-inning"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+          <p className="text-[11px] mb-3 text-center" style={{ color: COLORS.muted }}>
+            Use these arrows to move between halves at any time, including back to review or fix an earlier one. Moving either direction clears both base diagrams, since each half starts fresh.
+          </p>
+
+          {/* TEAM TABS */}
+          <div className="flex gap-1">
+            <button
+              onClick={() => setActiveTrackerTeam(game.id, "us")}
+              className="px-4 py-2 rounded-t-md text-sm font-bold"
+              style={{ background: activeTeam === "us" ? "#EFF1FE" : "#EAE4F7", color: COLORS.field, borderBottom: activeTeam === "us" ? `2px solid ${COLORS.mustard}` : "2px solid transparent" }}
+            >
+              {teamName || "Our Team"}
+            </button>
+            <button
+              onClick={() => setActiveTrackerTeam(game.id, "opp")}
+              className="px-4 py-2 rounded-t-md text-sm font-bold"
+              style={{ background: activeTeam === "opp" ? "#EFF1FE" : "#EAE4F7", color: COLORS.field, borderBottom: activeTeam === "opp" ? `2px solid ${COLORS.mustard}` : "2px solid transparent" }}
+            >
+              {game.opponent || "Opponent"}
+            </button>
+          </div>
+
+          <div className="rounded-lg p-4 mb-5" style={{ background: "#EFF1FE", border: `2px solid ${COLORS.mustard}`, borderTopLeftRadius: 0 }}>
+            <h3 className="font-extrabold uppercase tracking-wide text-sm mb-3" style={{ color: COLORS.field }}>
+              Live At-Bat Tracker — {teamLabelFor(activeTeam)}
+            </h3>
+            {activeTeam === "us" ? (
+              <AtBatTrackerSection
+                game={game} team="us" battingOrder={battingOrder} playersById={playersById} gameLog={gameLog} showGender
+                confirmAtBatAndResolve={confirmAtBatAndResolve} updateGameLive={updateGameLive} endHalfInning={endHalfInning}
+              />
             ) : (
-              <>
-                <div className="flex items-center gap-3 mb-3 p-2 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
-                  <button onClick={() => moveBatter(-1)} className="text-stone-400 hover:text-stone-700"><ChevronLeft size={18} /></button>
-                  <span className="font-mono font-extrabold w-6 text-center" style={{ color: COLORS.clay }}>{liveBatterIdx + 1}</span>
-                  <span className="flex-1 font-bold" style={{ color: COLORS.ink }}>{currentBatter?.name || "—"}</span>
-                  {currentBatter && <GenderPill gender={currentBatter.gender} />}
-                  <button onClick={() => moveBatter(1)} className="text-stone-400 hover:text-stone-700"><ChevronRight size={18} /></button>
-                </div>
-
-                <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>1. Tap how this at-bat ended. Tap a different result to correct it, it won't double count.</p>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {["OUT", "1B", "2B", "3B", "HR"].map((r) => {
-                    const solid = resultColor[r];
-                    const selected = pendingResult === r;
-                    return (
-                      <button
-                        key={r}
-                        onClick={() => setPendingResult(r)}
-                        className="px-3 py-2 rounded-md text-sm font-bold transition-colors"
-                        style={{
-                          background: selected ? solid : withAlpha(solid, 0.12),
-                          color: selected ? "white" : solid,
-                          border: `1.5px solid ${selected ? solid : withAlpha(solid, 0.35)}`,
-                        }}
-                      >
-                        {resultLabel[r]}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>2. Add any RBIs from this at-bat, or confirm there weren't any.</p>
-                <div className="flex flex-wrap items-center gap-2 mb-4">
-                  <button
-                    onClick={() => setPendingRbi((v) => Math.max(0, v - 1))}
-                    className="w-7 h-7 rounded-md flex items-center justify-center"
-                    style={{ background: "white", border: `1px solid ${COLORS.line}`, color: COLORS.ink }}
-                  >
-                    <Minus size={14} />
-                  </button>
-                  <span className="w-6 text-center font-mono font-extrabold tabular-nums" style={{ color: COLORS.ink }}>{pendingRbi}</span>
-                  <button
-                    onClick={() => { setPendingRbi((v) => v + 1); setNoRbiSelected(false); }}
-                    className="w-7 h-7 rounded-md flex items-center justify-center"
-                    style={{ background: COLORS.mustard, color: "white" }}
-                  >
-                    <Plus size={14} />
-                  </button>
-                  <span className="text-xs font-bold uppercase tracking-wide mx-1" style={{ color: COLORS.muted }}>RBI</span>
-                  <button
-                    onClick={() => { setNoRbiSelected(true); setPendingRbi(0); }}
-                    className="px-3 py-1.5 rounded-md text-sm font-bold"
-                    style={{
-                      background: noRbiSelected ? COLORS.field : withAlpha(COLORS.field, 0.1),
-                      color: noRbiSelected ? "white" : COLORS.field,
-                      border: `1.5px solid ${noRbiSelected ? COLORS.field : withAlpha(COLORS.field, 0.3)}`,
-                    }}
-                  >
-                    No RBIs
-                  </button>
-                </div>
-
-                <p className="text-[11px] mb-1.5" style={{ color: COLORS.muted }}>
-                  3. Drag runners to where they ended up. Drag the current batter from their box onto a base if they reached one, or off to OUT if anyone's tagged. Up to 4 can end up at Home (everyone scores) or OUT.
-                </p>
-                <div
-                  className="relative rounded-lg mb-2"
-                  style={{ height: "230px", background: "white", border: `1px solid ${COLORS.line}` }}
-                  onPointerMove={onTokenPointerMove}
-                  onPointerUp={onTokenPointerUp}
-                >
-                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
-                    <polygon points="50,12 82,50 50,80 18,50" fill="none" stroke={COLORS.line} strokeWidth="1.2" />
-                  </svg>
-
-                  {[
-                    { zone: "2B", label: "2B", style: { top: "4%", left: "50%", transform: "translate(-50%,0)" } },
-                    { zone: "1B", label: "1B", style: { top: "44%", left: "80%", transform: "translate(-50%,-50%)" } },
-                    { zone: "3B", label: "3B", style: { top: "44%", left: "20%", transform: "translate(-50%,-50%)" } },
-                    { zone: "HOME", label: "Home", style: { top: "84%", left: "38%", transform: "translate(-50%,-50%)" } },
-                  ].map(({ zone, label, style }) => (
-                    <div
-                      key={zone}
-                      data-base-zone={zone}
-                      className="absolute flex flex-col items-center gap-1 p-1.5 rounded-md"
-                      style={{ ...style, minWidth: "70px", minHeight: "44px", background: withAlpha(COLORS.field, 0.06), border: `1px dashed ${COLORS.line}` }}
-                    >
-                      <span className="text-[10px] font-bold uppercase" style={{ color: COLORS.muted }}>{label}</span>
-                      <div className="flex flex-wrap gap-1 justify-center">
-                        {[...existingRunners, ...(currentBatterId ? [{ tokenKey: "BATTER", playerId: currentBatterId }] : [])]
-                          .filter((t) => posFor(t.tokenKey) === zone)
-                          .map((t) => (
-                            <button
-                              key={t.tokenKey}
-                              onPointerDown={(e) => onTokenPointerDown(e, t.tokenKey)}
-                              className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
-                              style={{
-                                background: draggingKey === t.tokenKey ? COLORS.clay : COLORS.field,
-                                color: "white",
-                                boxShadow: draggingKey === t.tokenKey ? "0 3px 8px rgba(0,0,0,0.25)" : "none",
-                              }}
-                            >
-                              {playersById[t.playerId]?.name?.split(" ")[0] || "?"}
-                            </button>
-                          ))}
-                      </div>
-                    </div>
-                  ))}
-
-                  <div
-                    data-base-zone="BATTERBOX"
-                    className="absolute flex flex-col items-center gap-1 p-1.5 rounded-md"
-                    style={{ top: "84%", left: "78%", transform: "translate(-50%,-50%)", minWidth: "80px", minHeight: "44px", background: withAlpha(COLORS.mustard, 0.12), border: `1px dashed ${COLORS.mustard}` }}
-                  >
-                    <span className="text-[10px] font-bold uppercase" style={{ color: COLORS.muted }}>Current Batter</span>
-                    {currentBatterId && posFor("BATTER") == null && (
-                      <button
-                        onPointerDown={(e) => onTokenPointerDown(e, "BATTER")}
-                        className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
-                        style={{ background: draggingKey === "BATTER" ? COLORS.clay : COLORS.field, color: "white" }}
-                      >
-                        {currentBatter?.name?.split(" ")[0] || "?"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div
-                  data-base-zone="OUT"
-                  className="flex flex-wrap items-center gap-2 p-2 rounded-md mb-2"
-                  style={{ background: withAlpha("#9B3A1F", 0.08), border: `1px dashed #9B3A1F`, minHeight: "38px" }}
-                  onPointerMove={onTokenPointerMove}
-                  onPointerUp={onTokenPointerUp}
-                >
-                  <span className="text-[10px] font-bold uppercase" style={{ color: "#9B3A1F" }}>Out (drag here if tagged)</span>
-                  {[...existingRunners, ...(currentBatterId ? [{ tokenKey: "BATTER", playerId: currentBatterId }] : [])]
-                    .filter((t) => posFor(t.tokenKey) === "OUT")
-                    .map((t) => (
-                      <button
-                        key={t.tokenKey}
-                        onPointerDown={(e) => onTokenPointerDown(e, t.tokenKey)}
-                        className="px-2 py-1 rounded-full text-[11px] font-bold touch-none"
-                        style={{ background: "#9B3A1F", color: "white" }}
-                      >
-                        {playersById[t.playerId]?.name?.split(" ")[0] || "?"}
-                      </button>
-                    ))}
-                </div>
-
-                <label className="flex items-center gap-2 mb-3 text-xs font-bold" style={{ color: COLORS.muted }}>
-                  <input type="checkbox" checked={basesConfirmed} onChange={(e) => setBasesConfirmed(e.target.checked)} />
-                  I've finished moving everyone for this play
-                </label>
-
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={confirmAtBat}
-                    disabled={!canAdvance}
-                    className="px-4 py-2.5 rounded-md text-sm font-extrabold flex items-center gap-1.5"
-                    style={{
-                      background: canAdvance ? COLORS.field : "#DAD3F0",
-                      color: canAdvance ? "white" : "#A79FC9",
-                      cursor: canAdvance ? "pointer" : "not-allowed",
-                    }}
-                  >
-                    Next Batter <ChevronRight size={16} />
-                  </button>
-                  <Btn variant="ghost" icon={ChevronRight} onClick={endInning}>End Inning</Btn>
-                </div>
-              </>
+              <AtBatTrackerSection
+                game={game} team="opp" battingOrder={oppBattingOrder} playersById={oppPlayersById} gameLog={gameLog} showGender={false}
+                confirmAtBatAndResolve={confirmAtBatAndResolve} updateGameLive={updateGameLive} endHalfInning={endHalfInning}
+              />
             )}
           </div>
 
@@ -1461,7 +1569,41 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
           </div>
           <GameStatsTable game={game} players={rosterPlayers} stats={stats} updateLine={updateLine} lineupOrder={lineupOrder} gameLog={gameLog} addManualRun={addManualRun} />
 
-          {/* PLAY-BY-PLAY LOG, GROUPED BY INNING */}
+          {oppLineup.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-sm font-bold uppercase tracking-wide mb-2" style={{ color: COLORS.field }}>{game.opponent || "Opponent"} — this game</h3>
+              <p className="text-xs mb-2" style={{ color: COLORS.muted }}>Per-game only — opponents aren't tracked across the season.</p>
+              <div className="overflow-x-auto rounded-lg" style={{ border: `1px solid ${COLORS.line}`, background: "white" }}>
+                <table className="w-full text-sm">
+                  <thead style={{ background: "#EAE4F7" }}>
+                    <tr>
+                      {["Player", "AB", "H", "OBP", "SLG", "RBI"].map((h) => (
+                        <th key={h} className="px-2 py-2 text-xs font-bold uppercase" style={{ color: COLORS.field }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {oppLineup.map((p) => {
+                      const line = lineFor(stats, game.id, p.id);
+                      const d = derive(line);
+                      return (
+                        <tr key={p.id} className="border-t" style={{ borderColor: COLORS.line }}>
+                          <td className="px-2 py-1.5 font-semibold" style={{ color: COLORS.ink }}>{p.name}</td>
+                          <td className="px-2 py-1.5 font-mono">{d.ab}</td>
+                          <td className="px-2 py-1.5 font-mono">{d.h}</td>
+                          <td className="px-2 py-1.5 font-mono">{fmt3(d.obp)}</td>
+                          <td className="px-2 py-1.5 font-mono">{fmt3(d.slg)}</td>
+                          <td className="px-2 py-1.5 font-mono">{line.rbi || 0}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* GAME LOG, grouped by inning + half */}
           <div className="mt-6">
             <div className="flex items-center justify-between mb-2">
               <button onClick={() => setShowLog((v) => !v)} className="flex items-center gap-1.5 text-sm font-bold uppercase tracking-wide" style={{ color: COLORS.field }}>
@@ -1478,47 +1620,56 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                   <p className="text-sm text-stone-400">No at-bats logged yet. Use the tracker above to start logging plays.</p>
                 )}
                 <div className="grid gap-3">
-                  {inningsInOrder.map((inning) => (
-                    <div key={inning}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.clay }}>Inning {inning}</span>
-                        <span className="text-xs font-bold" style={{ color: COLORS.muted }}>{inningRuns(inning)} run{inningRuns(inning) === 1 ? "" : "s"} this inning</span>
-                      </div>
-                      <div className="grid gap-1.5">
-                        {logsByInning[inning].map((entry) => {
-                          const p = playersById[entry.playerId];
-                          return (
-                            <div key={entry.id} className="flex items-center gap-2 px-3 py-1.5 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
-                              <span className="flex-1 text-sm font-semibold" style={{ color: COLORS.ink }}>{p?.name || "—"}</span>
-                              <span
-                                className="text-xs font-bold px-2 py-0.5 rounded-full"
-                                style={{ background: entry.result === "OUT" ? "#EAE4F7" : entry.result === "HR" ? COLORS.clay : COLORS.turf, color: entry.result === "OUT" ? COLORS.ink : "white" }}
-                              >
-                                {resultLabel[entry.result]}
-                              </span>
-                              {entry.result !== "RUN" && (
-                                <span className="flex items-center gap-1">
-                                  {[1, 2, 3, 4].map((n) => (
-                                    <span key={n} className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: (entry.finalBase || 0) >= n ? COLORS.field : "transparent", border: `1px solid ${COLORS.field}` }} />
-                                  ))}
-                                  {entry.finalOut && <span className="text-[10px] font-extrabold ml-0.5" style={{ color: "#9B3A1F" }}>OUT</span>}
+                  {keysInOrder.map((key) => {
+                    const [inn, half] = key.split("-");
+                    const entries = logsByKey[key];
+                    const team = teamForHalf(half);
+                    const runs = inningRuns(entries);
+                    return (
+                      <div key={key}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold uppercase tracking-wide" style={{ color: COLORS.clay }}>
+                            {half === "top" ? "Top" : "Bottom"} {inn} — {teamLabelFor(team)} batting
+                          </span>
+                          <span className="text-xs font-bold" style={{ color: COLORS.muted }}>{runs} run{runs === 1 ? "" : "s"} this half</span>
+                        </div>
+                        <div className="grid gap-1.5">
+                          {entries.map((entry) => {
+                            const pById = entry.team === "opp" ? oppPlayersById : playersById;
+                            const p = pById[entry.playerId];
+                            return (
+                              <div key={entry.id} className="flex items-center gap-2 px-3 py-1.5 rounded-md" style={{ background: "white", border: `1px solid ${COLORS.line}` }}>
+                                <span className="flex-1 text-sm font-semibold" style={{ color: COLORS.ink }}>{p?.name || "—"}</span>
+                                <span
+                                  className="text-xs font-bold px-2 py-0.5 rounded-full"
+                                  style={{ background: entry.result === "OUT" ? "#EAE4F7" : entry.result === "HR" ? COLORS.clay : COLORS.turf, color: entry.result === "OUT" ? COLORS.ink : "white" }}
+                                >
+                                  {resultLabel[entry.result]}
                                 </span>
-                              )}
-                              {entry.result !== "RUN" && (
-                                <span className="flex items-center gap-1 text-xs" style={{ color: COLORS.muted }}>
-                                  RBI
-                                  <button onClick={() => adjustPlayRbi(game, entry.id, -1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Minus size={11} /></button>
-                                  <span className="w-4 text-center font-mono">{entry.rbi || 0}</span>
-                                  <button onClick={() => adjustPlayRbi(game, entry.id, 1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Plus size={11} /></button>
-                                </span>
-                              )}
-                              <ConfirmDelete label="Remove" onConfirm={() => deletePlay(game, entry.id)} />
-                            </div>
-                          );
-                        })}
+                                {entry.result !== "RUN" && (
+                                  <span className="flex items-center gap-1">
+                                    {[1, 2, 3, 4].map((n) => (
+                                      <span key={n} className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: (entry.finalBase || 0) >= n ? COLORS.field : "transparent", border: `1px solid ${COLORS.field}` }} />
+                                    ))}
+                                    {entry.finalOut && <span className="text-[10px] font-extrabold ml-0.5" style={{ color: "#9B3A1F" }}>OUT</span>}
+                                  </span>
+                                )}
+                                {entry.result !== "RUN" && (
+                                  <span className="flex items-center gap-1 text-xs" style={{ color: COLORS.muted }}>
+                                    RBI
+                                    <button onClick={() => adjustPlayRbi(game, entry.id, -1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Minus size={11} /></button>
+                                    <span className="w-4 text-center font-mono">{entry.rbi || 0}</span>
+                                    <button onClick={() => adjustPlayRbi(game, entry.id, 1)} className="w-5 h-5 rounded flex items-center justify-center" style={{ background: "#EAE4F7" }}><Plus size={11} /></button>
+                                  </span>
+                                )}
+                                <ConfirmDelete label="Remove" onConfirm={() => deletePlay(game, entry.id)} />
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </>
             )}
@@ -1549,38 +1700,45 @@ function GameDetailView({ game, players, stats, lineups, gameLog, onBack, setRos
                 <p style={{ fontSize: "15px", fontWeight: 800, marginBottom: "16px" }}>
                   Final Score: {teamName || "Us"} {game.ourScore || 0} – {game.opponent || "Opponent"} {game.oppScore || 0}
                 </p>
-                {inningsInOrder.map((inning) => (
-                  <div key={inning} style={{ marginBottom: "14px" }}>
-                    <div style={{ fontSize: "14px", fontWeight: 800, borderBottom: "2px solid #222", marginBottom: "4px", paddingBottom: "2px", display: "flex", justifyContent: "space-between" }}>
-                      <span>Inning {inning}</span>
-                      <span>{inningRuns(inning)} run{inningRuns(inning) === 1 ? "" : "s"}</span>
+                {keysInOrder.map((key) => {
+                  const [inn, half] = key.split("-");
+                  const entries = logsByKey[key];
+                  const team = teamForHalf(half);
+                  const runs = inningRuns(entries);
+                  return (
+                    <div key={key} style={{ marginBottom: "14px" }}>
+                      <div style={{ fontSize: "14px", fontWeight: 800, borderBottom: "2px solid #222", marginBottom: "4px", paddingBottom: "2px", display: "flex", justifyContent: "space-between" }}>
+                        <span>{half === "top" ? "Top" : "Bottom"} {inn} — {teamLabelFor(team)} batting</span>
+                        <span>{runs} run{runs === 1 ? "" : "s"}</span>
+                      </div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                        <tbody>
+                          {entries.map((entry) => {
+                            const pById = entry.team === "opp" ? oppPlayersById : playersById;
+                            const p = pById[entry.playerId];
+                            return (
+                              <tr key={entry.id}>
+                                <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{p?.name || "—"}</td>
+                                <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{resultLabel[entry.result]}</td>
+                                <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>
+                                  {entry.result !== "RUN" && (
+                                    <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                                      {[1, 2, 3, 4].map((n) => (
+                                        <span key={n} style={{ width: "9px", height: "9px", display: "inline-block", border: "1px solid #333", background: (entry.finalBase || 0) >= n ? "#333" : "transparent", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact" }} />
+                                      ))}
+                                      {entry.finalOut && <span style={{ marginLeft: "4px", fontWeight: 800 }}>OUT</span>}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{entry.result !== "RUN" && entry.rbi ? `${entry.rbi} RBI` : ""}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-                      <tbody>
-                        {logsByInning[inning].map((entry) => {
-                          const p = playersById[entry.playerId];
-                          return (
-                            <tr key={entry.id}>
-                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{p?.name || "—"}</td>
-                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{resultLabel[entry.result]}</td>
-                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>
-                                {entry.result !== "RUN" && (
-                                  <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
-                                    {[1, 2, 3, 4].map((n) => (
-                                      <span key={n} style={{ width: "9px", height: "9px", display: "inline-block", border: "1px solid #333", background: (entry.finalBase || 0) >= n ? "#333" : "transparent", WebkitPrintColorAdjust: "exact", printColorAdjust: "exact" }} />
-                                    ))}
-                                    {entry.finalOut && <span style={{ marginLeft: "4px", fontWeight: 800 }}>OUT</span>}
-                                  </span>
-                                )}
-                              </td>
-                              <td style={{ padding: "3px 8px", borderBottom: "1px solid #ddd" }}>{entry.result !== "RUN" && entry.rbi ? `${entry.rbi} RBI` : ""}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
@@ -2477,15 +2635,19 @@ function TeamWorkspace({
     return game.roster || [];
   };
 
+  const oppBattingOrderFor = (game) => (game.oppLineup || []).map((p) => p.id);
+
   const RESULT_BASE = { OUT: 0, "1B": 1, "2B": 2, "3B": 3, HR: 4 };
 
   // Does everything for a confirmed at-bat in one pass: creates the play's log entry, applies
   // any base-running moves (existing runners and/or this batter, using the "BATTER" sentinel for
   // the latter since their entry doesn't exist yet), advances the batter, and updates the score.
+  // team is "us" or "opp" — it decides which batter index, base state, and score field get
+  // touched, and tags the entry so the report can group plays by who was actually up.
   // This used to be two separate functions each saving their own snapshot of state, which meant
   // whichever ran second silently overwrote whatever the first one had just changed. Doing it as
   // one function with one gameLog write and one game write avoids that entirely.
-  const confirmAtBatAndResolve = (game, playerId, result, rbi, moves) => {
+  const confirmAtBatAndResolve = (game, team, playerId, result, rbi, moves, orderLength) => {
     const current = lineFor(stats, game.id, playerId);
     const fieldByResult = { "1B": "s", "2B": "d", "3B": "t", HR: "hr" };
     const patch = { ab: (Number(current.ab) || 0) + 1 };
@@ -2500,6 +2662,8 @@ function TeamWorkspace({
     let newEntry = {
       id: newEntryId,
       inning: game.liveInning || 1,
+      half: game.inningHalf || "top",
+      team,
       playerId,
       result,
       rbi,
@@ -2507,8 +2671,12 @@ function TeamWorkspace({
       finalOut: result === "OUT",
     };
 
+    const baseStateField = team === "opp" ? "oppBaseState" : "baseState";
+    const scoreField = team === "opp" ? "oppScore" : "ourScore";
+    const batterIdxField = team === "opp" ? "oppBatterIdx" : "liveBatterIdx";
+
     let scoreDelta = 0;
-    const nextBaseState = { ...(game.baseState || {}) };
+    const nextBaseState = { ...(game[baseStateField] || {}) };
     const patchesById = {};
     (moves || []).forEach(({ entryId, destination }) => {
       if (!destination) return;
@@ -2534,11 +2702,10 @@ function TeamWorkspace({
     ];
     setGameLogsState({ ...gameLogs, [game.id]: nextLog });
 
-    const order = battingOrderFor(game);
-    const livePatch = { baseState: nextBaseState, ourScore: Math.max(0, (game.ourScore || 0) + scoreDelta) };
-    if (order.length > 0) {
-      const curIdx = game.liveBatterIdx || 0;
-      livePatch.liveBatterIdx = (curIdx + 1) % order.length;
+    const livePatch = { [baseStateField]: nextBaseState, [scoreField]: Math.max(0, (game[scoreField] || 0) + scoreDelta) };
+    if (orderLength > 0) {
+      const curIdx = game[batterIdxField] || 0;
+      livePatch[batterIdxField] = (curIdx + 1) % orderLength;
     }
     updateGameLive(game.id, livePatch);
 
@@ -2555,7 +2722,7 @@ function TeamWorkspace({
     setGameLogsState({ ...gameLogs, [game.id]: nextLog });
 
     // RBI no longer drives the score (the base-running diagram does), but it still
-    // counts toward the player's season RBI total.
+    // counts toward the player's per-game RBI total, for either team.
     const current = lineFor(stats, game.id, entry.playerId);
     const nextPlayerRbi = Math.max(0, (Number(current.rbi) || 0) + appliedDelta);
     updateLine(game.id, entry.playerId, { ...current, rbi: nextPlayerRbi });
@@ -2565,10 +2732,13 @@ function TeamWorkspace({
     const log = gameLogs[game.id] || [];
     const entry = log.find((e) => e.id === entryId);
     if (!entry) return;
+    const team = entry.team || "us";
+    const scoreField = team === "opp" ? "oppScore" : "ourScore";
+    const baseStateField = team === "opp" ? "oppBaseState" : "baseState";
 
     if (entry.result === "RUN") {
       // A manually-recorded run scored, with no at-bat fields to reverse.
-      updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) });
+      updateGameLive(game.id, { [scoreField]: Math.max(0, (game[scoreField] || 0) - 1) });
     } else {
       // Reverse this play's effect on the player's aggregate stat line.
       const current = lineFor(stats, game.id, entry.playerId);
@@ -2581,15 +2751,14 @@ function TeamWorkspace({
       patch.rbi = Math.max(0, (Number(current.rbi) || 0) - (entry.rbi || 0));
       updateLine(game.id, entry.playerId, { ...current, ...patch });
 
-      // If this play had them crossing home, reverse that contribution to the score.
-      if (entry.finalBase === 4) {
-        updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) });
-      }
-      // Clear them off the bases if they were still sitting on one.
-      const baseState = { ...(game.baseState || {}) };
+      // Reverse this play's contribution to the score and/or base state, in one combined update.
+      const livePatch = {};
+      if (entry.finalBase === 4) livePatch[scoreField] = Math.max(0, (game[scoreField] || 0) - 1);
+      const baseState = { ...(game[baseStateField] || {}) };
       let baseChanged = false;
       ["1B", "2B", "3B"].forEach((b) => { if (baseState[b] === entryId) { baseState[b] = null; baseChanged = true; } });
-      if (baseChanged) updateGameLive(game.id, { baseState });
+      if (baseChanged) livePatch[baseStateField] = baseState;
+      if (Object.keys(livePatch).length) updateGameLive(game.id, livePatch);
     }
 
     setGameLogsState({ ...gameLogs, [game.id]: log.filter((e) => e.id !== entryId) });
@@ -2598,7 +2767,7 @@ function TeamWorkspace({
   const addManualRun = (game, playerId, delta) => {
     const log = gameLogs[game.id] || [];
     if (delta > 0) {
-      const entry = { id: uid("run"), inning: game.liveInning || 1, playerId, result: "RUN", rbi: 0 };
+      const entry = { id: uid("run"), inning: game.liveInning || 1, half: game.inningHalf || "top", team: "us", playerId, result: "RUN", rbi: 0 };
       setGameLogsState({ ...gameLogs, [game.id]: [...log, entry] });
       updateGameLive(game.id, { ourScore: (game.ourScore || 0) + 1 });
     } else {
@@ -2610,6 +2779,42 @@ function TeamWorkspace({
       updateGameLive(game.id, { ourScore: Math.max(0, (game.ourScore || 0) - 1) });
     }
   };
+
+  const setOppLineup = (gameId, oppLineup) => {
+    updateGameLive(gameId, { oppLineup });
+  };
+
+  const setBattingFirst = (gameId, value) => {
+    updateGameLive(gameId, { battingFirst: value, inningHalf: "top", activeTrackerTeam: value });
+  };
+
+  const setActiveTrackerTeam = (gameId, team) => {
+    updateGameLive(gameId, { activeTrackerTeam: team });
+  };
+
+  // Ends the current half-inning: flips top<->bottom (incrementing the inning number when
+  // bottom finishes), clears both teams' bases, and switches the active tab to whoever's up.
+  // dir: 1 to move forward a half-inning, -1 to move back one. Clamped so it can't go
+  // earlier than Top of the 1st. Clears both teams' bases either way, since a fresh
+  // half always starts (or resumes) with empty bases.
+  const stepHalfInning = (game, dir) => {
+    const topTeam = game.battingFirst || "us";
+    const bottomTeam = topTeam === "us" ? "opp" : "us";
+    let half = game.inningHalf || "top";
+    let inning = game.liveInning || 1;
+    if (dir === 1) {
+      if (half === "top") { half = "bottom"; }
+      else { half = "top"; inning += 1; }
+    } else {
+      if (half === "bottom") { half = "top"; }
+      else if (inning > 1) { inning -= 1; half = "bottom"; }
+      else { return; } // already at Top of the 1st, nowhere earlier to go
+    }
+    const activeTrackerTeam = half === "top" ? topTeam : bottomTeam;
+    updateGameLive(game.id, { inningHalf: half, liveInning: inning, activeTrackerTeam, baseState: {}, oppBaseState: {} });
+  };
+  const endHalfInning = (game) => stepHalfInning(game, 1);
+  const prevHalfInning = (game) => stepHalfInning(game, -1);
 
   const openPlayer = players.find((p) => p.id === openPlayerId);
   const openGame = games.find((g) => g.id === openGameId);
@@ -2670,6 +2875,11 @@ function TeamWorkspace({
             adjustPlayRbi={adjustPlayRbi}
             deletePlay={deletePlay}
             addManualRun={addManualRun}
+            setOppLineup={setOppLineup}
+            setBattingFirst={setBattingFirst}
+            setActiveTrackerTeam={setActiveTrackerTeam}
+            endHalfInning={endHalfInning}
+            prevHalfInning={prevHalfInning}
             teamName={teamName}
           />
         )}
