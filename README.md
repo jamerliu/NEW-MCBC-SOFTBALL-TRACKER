@@ -1,89 +1,76 @@
-# MCBC Softball Stat Tracker — standalone setup
+# MCBC Softball Stat Tracker
 
-This is the same app you've been using inside Claude, repackaged to run on its
-own with a real database, so it's no longer tied to a Claude account or
-artifact link.
+A stat tracking and game management app built for the MCBC church softball team. It covers roster management, batting and defensive lineup building, live at-bat tracking, and printable game reports, all designed for use on an iPad during games.
 
-## 1. Create a free database (Supabase)
+## Features
 
-1. Go to [supabase.com](https://supabase.com), sign up free, and create a new project.
-2. Once it's ready, open the **SQL Editor** and run:
+### Roster Management
+- Player skill tiers, positional ratings, and coach notes
+- Per-player season stat totals
 
-```sql
-create table app_kv (
-  key text primary key,
-  value text not null,
-  updated_at timestamptz default now()
-);
-```
+### Game Stat Tracking
+- Plus/minus steppers for at-bats, hits by type, RBI, and manually scored runs
+- Season totals update automatically as stats are logged
 
-That single table holds all of the app's data (teams, players, games, stats,
-lineups, history, trash) — it's the same simple key/value shape the app
-already used inside Claude, just stored in your own database now.
+### Batting Lineup Builder
+- Drag-to-reorder lineup interface
+- Optimization algorithm that balances OBP for leadoff spots and power (SLG/RBI) toward the front half of the order
+- Gender alternation rule: max 3 men in a row, max 2 women in a row, with a stats-based exception for elite women
 
-3. Go to **Project Settings → API**. Copy the **Project URL** and the
-   **anon public** key. You'll need both in the next step.
+### Defensive Lineup Builder
+- Assigns all 10 field positions across 8 innings
+- Enforces a 4-girls/6-guys constraint per inning
+- Minimum 2-inning play requirement per player, with conflict detection
+- Innings-played tracker so no one is over or under-played
 
-## 2. Configure the app
+### Live At-Bat Tracker
+- Draggable baseball diamond for base-running
+- Top/Bottom half-inning progression with automatic team tab switching
+- Opponent team tracking with a manually entered batting order
+- Score updates automatically when a runner is dragged to home
+- Game log grouped by inning, with quick RBI adjustment and undo (removing a play reverses its effect on that player's totals)
 
-1. Copy `.env.example` to a new file named `.env`.
-2. Fill in the two values you just copied:
+### Printable Reports
+- Batting lineup sheet
+- Defensive lineup sheet (landscape)
+- Game report with inning-by-inning breakdown, showing base-reached and OUT indicators for each at-bat
 
-```
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-```
+## Tech Stack
 
-## 3. Run it locally
+- **Frontend:** React + Vite
+- **Icons:** lucide-react
+- **Backend/Database:** Supabase (PostgreSQL)
+- **Hosting:** Vercel
 
-You'll need [Node.js](https://nodejs.org) installed (any recent version).
+## Getting Started
 
-```bash
-npm install
-npm run dev
-```
+1. Clone the repository and install dependencies:
+   ```bash
+   npm install
+   ```
+2. Set up a Supabase project and add your environment variables (make sure they're scoped to Production if deploying on Vercel):
+   ```
+   VITE_SUPABASE_URL=your_supabase_url
+   VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+   ```
+3. Run the app locally:
+   ```bash
+   npm run dev
+   ```
+4. Build for production:
+   ```bash
+   npm run build
+   ```
 
-Open the URL it prints (usually `http://localhost:5173`). The app should load
-exactly as it did inside Claude — same teams, same Lineup Builder, same
-everything — just talking to your own database now.
+## Multi-Coach Use
 
-## 4. Put it online
+Data is stored in a shared Supabase database, so multiple coaches can log in and edit rosters, lineups, and live game stats at the same time. Changes made by one coach are visible to the others.
 
-```bash
-npm run build
-```
+## Notes and Limitations
 
-This creates a `dist` folder with the finished app. Two easy free options to
-host it:
+- The inning-by-inning game report only includes plays logged through the Live At-Bat Tracker. If you use the season-total +/- steppers directly for quick corrections, those update player totals correctly but won't appear as an entry in the inning-by-inning report, since there's no inning context attached to a stepper tap.
+- Optimized for touch use on iPad during games.
 
-- **Netlify Drop**: go to [app.netlify.com/drop](https://app.netlify.com/drop)
-  and drag the `dist` folder onto the page. You'll get a public URL in
-  seconds. No account strictly required, though making one lets you update
-  the same site later instead of getting a new URL each time.
-- **Vercel**: create a free account at [vercel.com](https://vercel.com),
-  install the Vercel CLI (`npm i -g vercel`), then run `vercel` from this
-  project's folder and follow the prompts.
+## License
 
-Either way, you get a real URL you can send to your co-coaches — no Claude
-account needed on their end, no "publish" link that can be permanently
-revoked, and you fully control the data.
-
-## About access and privacy
-
-This setup does **not** add logins or per-person permissions — anyone who has
-your app's URL can open it and edit the data, same as the shared-link
-behavior you had inside Claude. The difference is the data lives in a
-database you own, not tied to anyone's Claude account.
-
-A technical note for later, if you ever want real access control (separate
-logins for each coach, view-only access for players, etc.): Supabase has
-built-in authentication and "Row Level Security" policies that can restrict
-who can read or write each row. That's a bigger step than this setup covers,
-but it's the natural next move if you outgrow "anyone with the link."
-
-## Updating the app later
-
-If you come back to Claude and ask for more features, you can re-export the
-updated `App.jsx` and drop it into `src/App.jsx` here, replacing the old one.
-Nothing else in this project needs to change, since `storage.js` already
-handles talking to your database.
+Internal use for the MCBC softball team.
